@@ -207,11 +207,96 @@ async function loadCentralData() {
         }
 }
 
-async function saveCentralData() {
+// Secure token prompt function
+async function promptForToken() {
+    return new Promise((resolve) => {
+        // Create modal for token input
+        const modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.style.display = 'block';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2><i class="fas fa-key"></i> GitHub Token Required</h2>
+                </div>
+                <div class="modal-body">
+                    <p>To save your data to the cloud, please provide your GitHub Personal Access Token.</p>
+                    <div class="form-group">
+                        <label for="secure-token-input">GitHub Token:</label>
+                        <input type="password" id="secure-token-input" placeholder="Enter your GitHub token" style="width: 100%; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; margin-top: 8px;">
+                    </div>
+                    <div style="margin-top: 16px; padding: 12px; background: #f8fafc; border-radius: 8px; border-left: 4px solid #3b82f6;">
+                        <h4 style="margin: 0 0 8px 0; color: #1e40af;">How to get a token:</h4>
+                        <ol style="margin: 0; padding-left: 20px; color: #64748b;">
+                            <li>Go to <strong>github.com/settings/tokens</strong></li>
+                            <li>Click "Generate new token (classic)"</li>
+                            <li>Check the "gist" permission</li>
+                            <li>Copy and paste the token here</li>
+                        </ol>
+                        <p style="margin: 8px 0 0 0; color: #64748b; font-size: 14px;"><strong>Note:</strong> Your token is used only for this save operation and is not stored anywhere.</p>
+                    </div>
+                    <div class="form-actions" style="margin-top: 20px;">
+                        <button type="button" class="btn btn-secondary" id="cancel-token-btn">Cancel</button>
+                        <button type="button" class="btn btn-primary" id="save-token-btn">Save to Cloud</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Add modal to page
+        document.body.appendChild(modal);
+        
+        // Focus on input
+        setTimeout(() => {
+            document.getElementById('secure-token-input').focus();
+        }, 100);
+        
+        // Handle cancel button
+        document.getElementById('cancel-token-btn').addEventListener('click', () => {
+            modal.remove();
+            resolve(null);
+        });
+        
+        // Handle save button
+        document.getElementById('save-token-btn').addEventListener('click', () => {
+            const token = document.getElementById('secure-token-input').value.trim();
+            modal.remove();
+            resolve(token || null);
+        });
+        
+        // Handle Enter key
+        document.getElementById('secure-token-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const token = e.target.value.trim();
+                modal.remove();
+                resolve(token || null);
+            }
+        });
+        
+        // Handle modal close on background click
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.remove();
+                resolve(null);
+            }
+        });
+    });
+}
+
+async function saveCentralData(userToken = null) {
     if (!currentGistId) return false;
     
-    const token = CONFIG.GITHUB_TOKEN || document.getElementById('github-token')?.value;
-    if (!token && CONFIG.AUTO_SAVE_TO_CENTRAL) return false;
+    // Get token from user input if not provided
+    let token = userToken || CONFIG.GITHUB_TOKEN || document.getElementById('github-token')?.value;
+    
+    // If no token available, prompt user for secure token entry
+    if (!token) {
+        token = await promptForToken();
+        if (!token) {
+            showMessage('❌ GitHub token required to save to cloud', 'error');
+            return false;
+        }
+    }
     
     const data = {
         users: users,
@@ -232,12 +317,9 @@ async function saveCentralData() {
     
     const headers = {
         'Content-Type': 'application/json',
-        'Accept': 'application/vnd.github.v3+json'
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': `token ${token}`
     };
-    
-    if (token) {
-        headers['Authorization'] = `token ${token}`;
-    }
     
     const response = await fetch(`${GIST_API_URL}/${currentGistId}`, {
         method: 'PATCH',
@@ -604,6 +686,18 @@ function handleTaskSubmit(e) {
     renderCalendar();
     closeModal();
     saveData();
+    
+    // Auto-save to cloud if centralized data is enabled
+    if (usingCentralData) {
+        saveCentralData().then(success => {
+            if (success) {
+                showMessage('✅ Data saved to cloud successfully!', 'success');
+            }
+        }).catch(error => {
+            console.error('Cloud save error:', error);
+            showMessage('⚠️ Could not save to cloud, data saved locally', 'warning');
+        });
+    }
 }
 
 // User Management Functions
@@ -631,6 +725,18 @@ function handleAddUser(e) {
     closeAddUserModal();
     saveData();
     showMessage(`User "${userName}" added successfully!`, 'success');
+    
+    // Auto-save to cloud if centralized data is enabled
+    if (usingCentralData) {
+        saveCentralData().then(success => {
+            if (success) {
+                showMessage('✅ User saved to cloud successfully!', 'success');
+            }
+        }).catch(error => {
+            console.error('Cloud save error:', error);
+            showMessage('⚠️ Could not save to cloud, data saved locally', 'warning');
+        });
+    }
 }
 
 function showManageUsersModal() {
@@ -813,70 +919,16 @@ function importData(event) {
 // GitHub Cloud Storage Functions
 async function saveToGitHub() {
     try {
-        const token = document.getElementById('github-token').value.trim();
-        const data = {
-            users: users,
-            tasksData: tasksData,
-            nextUserId: nextUserId,
-            currentTaskId: currentTaskId,
-            lastUpdated: new Date().toISOString(),
-            version: '2.0'
-        };
-
-        const gistData = {
-            description: "Accountability Tracker Data",
-            public: !token, // Public if no token, private if token provided
-            files: {
-                "accountability-data.json": {
-                    content: JSON.stringify(data, null, 2)
-                }
-            }
-        };
-
-        const headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/vnd.github.v3+json'
-        };
-
-        if (token) {
-            headers['Authorization'] = `token ${token}`;
-        }
-
-        let response;
-        if (currentGistId) {
-            // Update existing gist
-            response = await fetch(`${GIST_API_URL}/${currentGistId}`, {
-                method: 'PATCH',
-                headers: headers,
-                body: JSON.stringify(gistData)
-            });
+        // Use centralized save function for consistency
+        const success = await saveCentralData();
+        if (success) {
+            showMessage('✅ Data successfully saved to GitHub!', 'success');
         } else {
-            // Create new gist
-            response = await fetch(GIST_API_URL, {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify(gistData)
-            });
-        }
-
-        if (response.ok) {
-            const result = await response.json();
-            currentGistId = result.id;
-            localStorage.setItem('gistId', currentGistId);
-            
-            // Show the Gist URL
-            const gistUrl = result.html_url;
-            document.getElementById('gist-url').value = gistUrl;
-            document.getElementById('gist-url-display').style.display = 'block';
-            
-            showMessage('Data saved to cloud successfully! Share the URL with collaborators.', 'success');
-        } else {
-            const error = await response.json();
-            throw new Error(error.message || 'Failed to save to cloud');
+            showMessage('❌ Failed to save to GitHub. Please check your token.', 'error');
         }
     } catch (error) {
-        console.error('Error saving to GitHub:', error);
-        showMessage(`Error saving to cloud: ${error.message}`, 'error');
+        console.error('GitHub save error:', error);
+        showMessage('❌ Error saving to GitHub: ' + error.message, 'error');
     }
 }
 

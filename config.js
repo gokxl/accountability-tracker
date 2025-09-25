@@ -32,5 +32,4 @@ const CONFIG = {
 // 1. Create a GitHub Gist with your initial data
 // 2. Set CENTRAL_GIST_ID to the Gist ID (from the URL)
 // 3. Optionally set GITHUB_TOKEN for better reliability
-
 // 4. All users will now share the same data!
