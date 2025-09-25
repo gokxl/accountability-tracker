@@ -9,20 +9,21 @@ let currentYear = new Date().getFullYear();
 let users = CONFIG.DEFAULT_USERS;
 let nextUserId = 3;
 
-// GitHub Gist integration for cloud storage
-let currentGistId = CONFIG.CENTRAL_GIST_ID || localStorage.getItem('gistId') || null;
+// GitHub Gist integration for pure cloud storage
+let currentGistId = CONFIG.CENTRAL_GIST_ID || null;
 const GIST_API_URL = 'https://api.github.com/gists';
 
-// Centralized data flag
+// Pure cloud data flag - no localStorage fallback
 let usingCentralData = !!CONFIG.CENTRAL_GIST_ID;
 
-// Session-based token storage (in memory only)
+// Enhanced session-based token storage with better validation
 let sessionToken = null;
 let tokenExpiry = null;
 const TOKEN_SESSION_DURATION = 30 * 60 * 1000; // 30 minutes in milliseconds
 
-// Loading state management
+// Loading state management with better operation tracking
 let isCloudOperationInProgress = false;
+let operationType = null; // Track what type of operation is in progress
 
 // Sample data for both people
 let tasksData = {
@@ -140,29 +141,23 @@ let tasksData = {
     ]
 };
 
-// Initialize the application
+// Initialize the application - pure cloud approach
 document.addEventListener('DOMContentLoaded', async function() {
-    // Show loading message if using central data
     if (usingCentralData) {
         showMessage('Loading shared data from cloud...', 'info');
         try {
-            await loadCentralData();
+            await loadData();
             showMessage('✅ Connected to shared cloud storage!', 'success');
         } catch (error) {
             console.error('Failed to load central data:', error);
-            showMessage('⚠️ Using local storage - central data unavailable', 'warning');
-            loadData(); // Fallback to local data
+            showMessage('⚠️ Using default data - central data unavailable', 'warning');
         }
     } else {
-        loadData();
+        console.log('Using default sample data - no cloud storage configured');
     }
     
     currentTaskId = Math.max(...Object.values(tasksData).flat().map(t => t.id)) || 0;
-    updateStats();
-    renderTasks();
-    renderKanbanBoard();
-    renderCalendar();
-    renderPersonButtons();
+    refreshAllViews();
     updateTokenStatus(); // Show initial token status
     
     // Set up form submissions
@@ -175,20 +170,19 @@ document.addEventListener('DOMContentLoaded', async function() {
     }
 });
 
-// Data persistence
-function loadData() {
-    const saved = localStorage.getItem('accountabilityTracker');
-    if (saved) {
-        const data = JSON.parse(saved);
-        if (data.users) users = data.users;
-        if (data.tasksData) {
-            // Merge saved data with existing sample data
-            Object.keys(data.tasksData).forEach(userId => {
-                tasksData[userId] = data.tasksData[userId];
-            });
-        }
-        if (data.nextUserId) nextUserId = data.nextUserId;
-        if (data.currentTaskId) currentTaskId = data.currentTaskId;
+// Pure cloud-based data loading - no localStorage
+async function loadData() {
+    if (!currentGistId) {
+        console.log('No cloud storage configured, using default data');
+        return;
+    }
+    
+    try {
+        await loadCentralData();
+        console.log('Data loaded from cloud successfully');
+    } catch (error) {
+        console.error('Failed to load from cloud, using default data:', error);
+        showMessage('⚠️ Using default data - cloud storage unavailable', 'warning');
     }
 }
 
@@ -202,18 +196,21 @@ async function loadCentralData() {
     const gist = await response.json();
     const fileContent = gist.files['accountability-data.json'];
     
-        if (fileContent) {
-            let centralData = JSON.parse(fileContent.content);
-            // Load central data
-            if (centralData.users) users = centralData.users;
-            if (centralData.tasksData) tasksData = centralData.tasksData;
-            if (centralData.nextUserId) nextUserId = centralData.nextUserId;
-            if (centralData.currentTaskId) currentTaskId = centralData.currentTaskId;
-            // Also save to local storage as backup
-            saveData();
-        } else {
-            throw new Error('No data found in central storage');
-        }
+    if (fileContent) {
+        let centralData = JSON.parse(fileContent.content);
+        // Load central data - completely replace local data
+        if (centralData.users) users = centralData.users;
+        if (centralData.tasksData) tasksData = centralData.tasksData;
+        if (centralData.nextUserId) nextUserId = centralData.nextUserId;
+        if (centralData.currentTaskId) currentTaskId = centralData.currentTaskId;
+        
+        console.log('Cloud data loaded:', { 
+            userCount: Object.keys(users).length, 
+            totalTasks: Object.values(tasksData).reduce((sum, tasks) => sum + tasks.length, 0)
+        });
+    } else {
+        throw new Error('No data found in central storage');
+    }
 }
 
 // Secure token prompt function
@@ -292,40 +289,56 @@ async function promptForToken() {
     });
 }
 
-// Smart token management with session caching
+// Enhanced session token management with better caching
 async function getSessionToken() {
-    // Check if we have a valid session token
+    // Check if we have a valid cached session token
     if (sessionToken && tokenExpiry && Date.now() < tokenExpiry) {
-        console.log('Using cached session token');
+        console.log('Using cached session token (expires in', Math.ceil((tokenExpiry - Date.now()) / (1000 * 60)), 'minutes)');
         return sessionToken;
     }
     
-    // Check for configured token
+    // Check for configured token first
     if (CONFIG.GITHUB_TOKEN) {
+        console.log('Using configured token from CONFIG');
         return CONFIG.GITHUB_TOKEN;
     }
     
-    // Clear expired token
+    // Clear any expired token
     if (sessionToken && tokenExpiry && Date.now() >= tokenExpiry) {
-        console.log('Session token expired, clearing...');
+        console.log('Session token expired, clearing cache...');
         sessionToken = null;
         tokenExpiry = null;
-    }
-    
-    // No valid token, prompt user
-    console.log('No valid session token, prompting user...');
-    const token = await promptForToken();
-    
-    if (token) {
-        // Cache the token for the session
-        sessionToken = token;
-        tokenExpiry = Date.now() + TOKEN_SESSION_DURATION;
-        console.log('Token cached for session (30 minutes)');
-        showMessage('🔑 Token saved for this session (30 min) - no more prompts needed!', 'success');
         updateTokenStatus();
     }
     
-    return token;
+    // Prevent multiple concurrent token prompts
+    if (isCloudOperationInProgress && operationType === 'token-prompt') {
+        console.log('Token prompt already in progress, waiting...');
+        return null;
+    }
+    
+    // No valid token available, prompt user
+    console.log('No valid session token, prompting user...');
+    operationType = 'token-prompt';
+    isCloudOperationInProgress = true;
+    
+    try {
+        const token = await promptForToken();
+        
+        if (token && token.trim()) {
+            // Cache the valid token for the session
+            sessionToken = token.trim();
+            tokenExpiry = Date.now() + TOKEN_SESSION_DURATION;
+            console.log('New token cached for 30-minute session');
+            showMessage('🔑 Token saved for this session - no more prompts for 30 minutes!', 'success');
+            updateTokenStatus();
+        }
+        
+        return sessionToken;
+    } finally {
+        isCloudOperationInProgress = false;
+        operationType = null;
+    }
 }
 
 // Update token status indicator
@@ -365,22 +378,49 @@ function clearSessionToken() {
     showMessage('🔓 Session token cleared', 'info');
 }
 
-// Improved save function with smart token handling
-async function saveCentralDataWithToken() {
-    if (!currentGistId) {
-        console.error('No central Gist ID configured');
+// Pure cloud-based save operation - no localStorage
+async function saveData() {
+    if (!usingCentralData || !currentGistId) {
+        console.log('No cloud storage configured - data only in memory');
         return false;
     }
     
-    // Prevent concurrent operations
-    if (isCloudOperationInProgress) {
-        console.log('Cloud operation already in progress, skipping...');
+    try {
+        const success = await saveCentralDataWithToken();
+        if (success) {
+            console.log('Data successfully saved to cloud');
+            return true;
+        } else {
+            console.log('Cloud save failed or cancelled');
+            return false;
+        }
+    } catch (error) {
+        console.error('Save operation failed:', error);
+        showMessage('❌ Failed to save data to cloud', 'error');
+        return false;
+    }
+}
+
+// Direct cloud save with improved token handling
+async function saveCentralDataWithToken() {
+    if (!currentGistId) {
+        console.error('No central Gist ID configured');
+        showMessage('❌ Cloud storage not configured', 'error');
+        return false;
+    }
+    
+    // Prevent concurrent operations (except token prompts)
+    if (isCloudOperationInProgress && operationType !== 'token-prompt') {
+        console.log('Another cloud operation is in progress, queuing...');
         return false;
     }
     
     isCloudOperationInProgress = true;
+    operationType = 'save';
     
     try {
+        showMessage('💾 Saving to cloud...', 'info');
+        
         const token = await getSessionToken();
         if (!token) {
             showMessage('❌ GitHub token required to save to cloud', 'error');
@@ -388,22 +428,39 @@ async function saveCentralDataWithToken() {
         }
         
         const result = await saveCentralData(token);
+        
+        if (result) {
+            showMessage('✅ Data saved to cloud successfully!', 'success');
+            
+            // Refresh UI to ensure consistency
+            setTimeout(async () => {
+                try {
+                    await loadCentralData();
+                    refreshAllViews();
+                    console.log('UI refreshed after successful save');
+                } catch (error) {
+                    console.error('Failed to refresh after save:', error);
+                }
+            }, 500);
+        }
+        
         return result;
     } finally {
         isCloudOperationInProgress = false;
+        operationType = null;
     }
 }
 
+// Enhanced cloud save with better error handling and validation
 async function saveCentralData(userToken = null) {
     if (!currentGistId) {
         console.error('No central Gist ID configured');
         return false;
     }
     
-    // Get token from user input if not provided
+    // Get token from session cache, config, or user input
     let token = userToken || CONFIG.GITHUB_TOKEN;
     
-    // If no token available, prompt user for secure token entry
     if (!token) {
         console.log('No token available, prompting user...');
         token = await promptForToken();
@@ -414,6 +471,12 @@ async function saveCentralData(userToken = null) {
         console.log('Token provided by user');
     }
     
+    // Validate that we have data to save
+    if (!users || Object.keys(users).length === 0) {
+        showMessage('❌ No user data to save', 'error');
+        return false;
+    }
+    
     try {
         const data = {
             users: users,
@@ -421,7 +484,7 @@ async function saveCentralData(userToken = null) {
             nextUserId: nextUserId,
             currentTaskId: currentTaskId,
             lastUpdated: new Date().toISOString(),
-            version: CONFIG.VERSION
+            version: CONFIG.VERSION || '2.0'
         };
     
         const gistData = {
@@ -438,7 +501,8 @@ async function saveCentralData(userToken = null) {
             'Authorization': `token ${token}`
         };
     
-        console.log('Saving to Gist:', currentGistId);
+        console.log('Saving to Gist:', currentGistId, '- Users:', Object.keys(users).length, '- Total tasks:', Object.values(tasksData).reduce((sum, tasks) => sum + tasks.length, 0));
+        
         const response = await fetch(`${GIST_API_URL}/${currentGistId}`, {
             method: 'PATCH',
             headers: headers,
@@ -446,32 +510,44 @@ async function saveCentralData(userToken = null) {
         });
         
         if (response.ok) {
-            console.log('Data saved to cloud successfully');
-            
-            // Force a small delay then reload from cloud to ensure consistency
-            setTimeout(async () => {
-                try {
-                    await loadCentralData();
-                    renderPersonButtons();
-                    updateStats();
-                    renderTasks();
-                    renderKanbanBoard();
-                    renderCalendar();
-                    console.log('Reloaded data from cloud for consistency');
-                } catch (error) {
-                    console.error('Failed to reload from cloud:', error);
-                }
-            }, 1000);
+            const result = await response.json();
+            console.log('✅ Data saved to cloud successfully at:', new Date().toLocaleTimeString());
+            console.log('Cloud data summary:', {
+                users: Object.keys(data.users).length,
+                totalTasks: Object.values(data.tasksData).reduce((sum, tasks) => sum + tasks.length, 0),
+                lastUpdated: data.lastUpdated
+            });
             
             return true;
         } else {
-            console.error('Failed to save to cloud:', response.status, response.statusText);
             const errorText = await response.text();
+            console.error('❌ Failed to save to cloud:', response.status, response.statusText);
             console.error('Error details:', errorText);
+            
+            // Provide specific error messages
+            if (response.status === 401) {
+                showMessage('❌ Invalid GitHub token - please check your token', 'error');
+                // Clear the invalid session token
+                sessionToken = null;
+                tokenExpiry = null;
+                updateTokenStatus();
+            } else if (response.status === 404) {
+                showMessage('❌ Gist not found - please check the Gist ID', 'error');
+            } else {
+                showMessage('❌ Failed to save to cloud - please try again', 'error');
+            }
+            
             return false;
         }
     } catch (error) {
-        console.error('Error saving to cloud:', error);
+        console.error('❌ Error saving to cloud:', error);
+        
+        if (error.name === 'TypeError' && error.message.includes('fetch')) {
+            showMessage('❌ Network error - check your internet connection', 'error');
+        } else {
+            showMessage('❌ Unexpected error saving to cloud', 'error');
+        }
+        
         return false;
     }
 }
@@ -488,6 +564,21 @@ async function syncWithCentralData() {
         } catch (error) {
             console.error('Auto-sync failed:', error);
         }
+    }
+}
+
+// Refresh all UI views after data changes
+function refreshAllViews() {
+    renderPersonButtons();
+    updateStats();
+    renderTasks();
+    renderKanbanBoard();
+    renderCalendar();
+    
+    // Only refresh users list if the modal is open
+    const manageUsersModal = document.getElementById('manage-users-modal');
+    if (manageUsersModal && manageUsersModal.style.display === 'block') {
+        renderUsersList();
     }
 }
 
@@ -782,24 +873,36 @@ function editTask(taskId) {
     document.getElementById('task-modal').style.display = 'block';
 }
 
-// Delete task
-function deleteTask(taskId) {
+// Delete task with cloud sync
+async function deleteTask(taskId) {
     if (confirm('Are you sure you want to delete this task?')) {
         tasksData[currentPerson] = tasksData[currentPerson].filter(task => task.id !== taskId);
-        updateStats();
-        renderTasks();
-        renderKanbanBoard();
-        renderCalendar();
-        saveData();
+        
+        // Immediately refresh UI
+        refreshAllViews();
         showMessage('Task deleted successfully!', 'success');
+        
+        // Save to cloud
+        if (usingCentralData) {
+            try {
+                const success = await saveData();
+                if (success) {
+                    showMessage('✅ Task deletion saved to cloud!', 'success');
+                } else {
+                    showMessage('⚠️ Task deleted locally but cloud sync failed', 'warning');
+                }
+            } catch (error) {
+                console.error('Cloud save error:', error);
+                showMessage('⚠️ Task deleted locally but cloud sync failed', 'warning');
+            }
+        }
     }
 }
 
-// Handle form submission
-function handleTaskSubmit(e) {
+// Handle form submission - pure cloud operations
+async function handleTaskSubmit(e) {
     e.preventDefault();
     
-    const formData = new FormData(e.target);
     const taskData = {
         name: document.getElementById('task-name').value,
         priority: document.getElementById('task-priority').value,
@@ -827,25 +930,25 @@ function handleTaskSubmit(e) {
         }
     }
     
-    updateStats();
-    renderTasks();
-    renderKanbanBoard();
-    renderCalendar();
+    // Close modal first for better UX
     closeModal();
-    saveData();
     
-    // Auto-save to cloud if centralized data is enabled
+    // Immediately refresh views with new data
+    refreshAllViews();
+    
+    // Save to cloud
     if (usingCentralData) {
-        syncToCloud().then(success => {
+        try {
+            const success = await saveData();
             if (success) {
-                showMessage('✅ Data saved to cloud successfully!', 'success');
+                showMessage('✅ Task saved to cloud successfully!', 'success');
             } else {
-                console.log('Cloud sync cancelled or failed');
+                showMessage('⚠️ Task saved locally but cloud sync failed', 'warning');
             }
-        }).catch(error => {
-            console.error('Cloud sync error:', error);
-            showMessage('⚠️ Could not save to cloud, data saved locally', 'warning');
-        });
+        } catch (error) {
+            console.error('Cloud save error:', error);
+            showMessage('⚠️ Task saved locally but cloud sync failed', 'warning');
+        }
     }
 }
 
@@ -859,7 +962,7 @@ function closeAddUserModal() {
     document.getElementById('add-user-form').reset();
 }
 
-function handleAddUser(e) {
+async function handleAddUser(e) {
     e.preventDefault();
     const userName = document.getElementById('user-name').value.trim();
     
@@ -870,23 +973,24 @@ function handleAddUser(e) {
     tasksData[userId] = [];
     nextUserId++;
     
-    renderPersonButtons();
+    // Close modal and refresh views immediately
     closeAddUserModal();
-    saveData();
+    refreshAllViews();
     showMessage(`User "${userName}" added successfully!`, 'success');
     
-    // Auto-save to cloud if centralized data is enabled
+    // Save to cloud
     if (usingCentralData) {
-        syncToCloud().then(success => {
+        try {
+            const success = await saveData();
             if (success) {
                 showMessage('✅ User saved to cloud successfully!', 'success');
             } else {
-                console.log('Cloud sync cancelled or failed for user');
+                showMessage('⚠️ User added locally but cloud sync failed', 'warning');
             }
-        }).catch(error => {
-            console.error('Cloud sync error:', error);
-            showMessage('⚠️ Could not save to cloud, data saved locally', 'warning');
-        });
+        } catch (error) {
+            console.error('Cloud save error:', error);
+            showMessage('⚠️ User added locally but cloud sync failed', 'warning');
+        }
     }
 }
 
@@ -932,7 +1036,7 @@ function renderUsersList() {
     });
 }
 
-function deleteUser(userId) {
+async function deleteUser(userId) {
     if (Object.keys(users).length <= 1) {
         showMessage('Cannot delete the last user!', 'error');
         return;
@@ -947,28 +1051,24 @@ function deleteUser(userId) {
             currentPerson = Object.keys(users)[0];
         }
         
-        renderPersonButtons();
-        renderUsersList();
-        updateStats();
-        renderTasks();
-        renderKanbanBoard();
-        renderCalendar();
-        saveData();
+        // Immediately refresh UI
+        refreshAllViews();
+        renderUsersList(); // Also refresh the manage users modal
         showMessage('User deleted successfully!', 'success');
         
-        // Auto-save to cloud if centralized data is enabled
+        // Save to cloud
         if (usingCentralData) {
-            syncToCloud().then(success => {
+            try {
+                const success = await saveData();
                 if (success) {
-                    showMessage('✅ User deletion saved to cloud!', 'success');
+                    showMessage('✅ User deletion saved to cloud permanently!', 'success');
                 } else {
-                    console.log('Cloud sync cancelled or failed for user deletion');
-                    showMessage('⚠️ User deleted locally, but may not sync to cloud', 'warning');
+                    showMessage('⚠️ User deleted locally but cloud sync failed', 'warning');
                 }
-            }).catch(error => {
+            } catch (error) {
                 console.error('Cloud save error:', error);
-                showMessage('⚠️ Could not save to cloud, data saved locally', 'warning');
-            });
+                showMessage('⚠️ User deleted locally but cloud sync failed', 'warning');
+            }
         }
     }
 }
@@ -1082,11 +1182,10 @@ function importData(event) {
     event.target.value = '';
 }
 
-// GitHub Cloud Storage Functions
+// GitHub Cloud Storage Functions - Pure cloud-based approach
 async function saveToGitHub() {
     try {
-        // Use centralized save function for consistency
-        const success = await syncToCloud();
+        const success = await saveData();
         if (success) {
             showMessage('✅ Data successfully saved to GitHub!', 'success');
         } else {
@@ -1113,43 +1212,6 @@ async function testTokenPrompt() {
     } catch (error) {
         console.error('Token prompt error:', error);
         showMessage('❌ Error with token prompt: ' + error.message, 'error');
-    }
-}
-
-// Enhanced save function that auto-syncs to cloud
-function saveData() {
-    const data = {
-        users: users,
-        tasksData: tasksData,
-        nextUserId: nextUserId,
-        currentTaskId: currentTaskId,
-        lastUpdated: new Date().toISOString()
-    };
-    localStorage.setItem('accountabilityTracker', JSON.stringify(data));
-    
-    // Don't auto-sync from saveData to avoid conflicts - let manual operations handle cloud sync
-    console.log('Data saved to localStorage');
-}
-
-// Manual cloud sync function
-async function syncToCloud() {
-    if (!usingCentralData) {
-        console.log('Central data not configured');
-        return false;
-    }
-    
-    try {
-        const success = await saveCentralDataWithToken();
-        if (success) {
-            console.log('Manual sync to cloud successful');
-            return true;
-        } else {
-            console.log('Manual sync to cloud failed or cancelled');
-            return false;
-        }
-    } catch (error) {
-        console.error('Manual sync error:', error);
-        return false;
     }
 }
 
@@ -1184,20 +1246,15 @@ async function loadFromGitHub() {
                     if (importedData.currentTaskId) currentTaskId = importedData.currentTaskId;
                     
                     currentGistId = gistId;
-                    localStorage.setItem('gistId', currentGistId);
+                    usingCentralData = true; // Enable cloud mode
                     
                     // Show the Gist URL
                     document.getElementById('gist-url').value = gist.html_url;
                     document.getElementById('gist-url-display').style.display = 'block';
                     
-                    renderPersonButtons();
-                    updateStats();
-                    renderTasks();
-                    renderKanbanBoard();
-                    renderCalendar();
-                    saveData();
+                    refreshAllViews();
                     
-                    showMessage('Data loaded from cloud successfully!', 'success');
+                    showMessage('✅ Data loaded from cloud successfully!', 'success');
                     closeShareModal();
                 } else {
                     throw new Error('Invalid data format in cloud storage');
@@ -1220,30 +1277,6 @@ function copyGistUrl() {
     document.execCommand('copy');
     showMessage('Cloud storage URL copied to clipboard!', 'success');
 }
-
-// Check for cloud updates periodically
-setInterval(async () => {
-    if (currentGistId) {
-        try {
-            const response = await fetch(`${GIST_API_URL}/${currentGistId}`);
-            if (response.ok) {
-                const gist = await response.json();
-                const lastUpdated = new Date(gist.updated_at);
-                const localData = JSON.parse(localStorage.getItem('accountabilityTracker') || '{}');
-                const localUpdated = new Date(localData.lastUpdated || 0);
-                
-                // If cloud data is newer, show notification
-                if (lastUpdated > localUpdated) {
-                    const cloudStatus = document.getElementById('cloud-status');
-                    cloudStatus.textContent = '🔄';
-                    cloudStatus.parentElement.title = 'New updates available - click Share > Load from Cloud';
-                }
-            }
-        } catch (error) {
-            console.log('Cloud check failed:', error.message);
-        }
-    }
-}, 60000); // Check every minute
 
 // Close modal
 function closeModal() {
