@@ -5,17 +5,16 @@ let currentTaskId = 0;
 let currentMonth = new Date().getMonth();
 let currentYear = new Date().getFullYear();
 
-// User management
-let users = {
-    person1: { name: 'Alex', id: 'person1' },
-    person2: { name: 'Jordan', id: 'person2' }
-};
-
+// User management - Initialize from config
+let users = CONFIG.DEFAULT_USERS;
 let nextUserId = 3;
 
 // GitHub Gist integration for cloud storage
-let currentGistId = localStorage.getItem('gistId') || null;
+let currentGistId = CONFIG.CENTRAL_GIST_ID || localStorage.getItem('gistId') || null;
 const GIST_API_URL = 'https://api.github.com/gists';
+
+// Centralized data flag
+let usingCentralData = !!CONFIG.CENTRAL_GIST_ID;
 
 // Sample data for both people
 const tasksData = {
@@ -134,9 +133,23 @@ const tasksData = {
 };
 
 // Initialize the application
-document.addEventListener('DOMContentLoaded', function() {
-    loadData();
-    currentTaskId = Math.max(...Object.values(tasksData).flat().map(t => t.id));
+document.addEventListener('DOMContentLoaded', async function() {
+    // Show loading message if using central data
+    if (usingCentralData) {
+        showMessage('Loading shared data from cloud...', 'info');
+        try {
+            await loadCentralData();
+            showMessage('✅ Connected to shared cloud storage!', 'success');
+        } catch (error) {
+            console.error('Failed to load central data:', error);
+            showMessage('⚠️ Using local storage - central data unavailable', 'warning');
+            loadData(); // Fallback to local data
+        }
+    } else {
+        loadData();
+    }
+    
+    currentTaskId = Math.max(...Object.values(tasksData).flat().map(t => t.id)) || 0;
     updateStats();
     renderTasks();
     renderKanbanBoard();
@@ -146,6 +159,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // Set up form submissions
     document.getElementById('task-form').addEventListener('submit', handleTaskSubmit);
     document.getElementById('add-user-form').addEventListener('submit', handleAddUser);
+    
+    // Set up auto-sync if configured
+    if (CONFIG.SYNC_INTERVAL_MINUTES > 0 && usingCentralData) {
+        setInterval(syncWithCentralData, CONFIG.SYNC_INTERVAL_MINUTES * 60 * 1000);
+    }
 });
 
 // Data persistence
@@ -162,6 +180,88 @@ function loadData() {
         }
         if (data.nextUserId) nextUserId = data.nextUserId;
         if (data.currentTaskId) currentTaskId = data.currentTaskId;
+    }
+}
+
+// Centralized data functions
+async function loadCentralData() {
+    if (!currentGistId) throw new Error('No central Gist ID configured');
+    
+    const response = await fetch(`${GIST_API_URL}/${currentGistId}`);
+    if (!response.ok) throw new Error('Failed to fetch central data');
+    
+    const gist = await response.json();
+    const fileContent = gist.files['accountability-data.json'];
+    
+    if (fileContent) {
+        const centralData = JSON.parse(fileContent.content);
+        
+        // Load central data
+        if (centralData.users) users = centralData.users;
+        if (centralData.tasksData) tasksData = centralData.tasksData;
+        if (centralData.nextUserId) nextUserId = centralData.nextUserId;
+        if (centralData.currentTaskId) currentTaskId = centralData.currentTaskId;
+        
+        // Also save to local storage as backup
+        saveData();
+    } else {
+        throw new Error('No data found in central storage');
+    }
+}
+
+async function saveCentralData() {
+    if (!currentGistId) return false;
+    
+    const token = CONFIG.GITHUB_TOKEN || document.getElementById('github-token')?.value;
+    if (!token && CONFIG.AUTO_SAVE_TO_CENTRAL) return false;
+    
+    const data = {
+        users: users,
+        tasksData: tasksData,
+        nextUserId: nextUserId,
+        currentTaskId: currentTaskId,
+        lastUpdated: new Date().toISOString(),
+        version: CONFIG.VERSION
+    };
+    
+    const gistData = {
+        files: {
+            "accountability-data.json": {
+                content: JSON.stringify(data, null, 2)
+            }
+        }
+    };
+    
+    const headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/vnd.github.v3+json'
+    };
+    
+    if (token) {
+        headers['Authorization'] = `token ${token}`;
+    }
+    
+    const response = await fetch(`${GIST_API_URL}/${currentGistId}`, {
+        method: 'PATCH',
+        headers: headers,
+        body: JSON.stringify(gistData)
+    });
+    
+    return response.ok;
+}
+
+async function syncWithCentralData() {
+    if (usingCentralData) {
+        try {
+            await loadCentralData();
+            updateStats();
+            renderTasks();
+            renderKanbanBoard();
+            renderCalendar();
+            console.log('Auto-synced with central data');
+        } catch (error) {
+            console.error('Auto-sync failed:', error);
+        }
     }
 }
 
@@ -788,13 +888,16 @@ function saveData() {
         users: users,
         tasksData: tasksData,
         nextUserId: nextUserId,
-        currentTaskId: currentTaskId
+        currentTaskId: currentTaskId,
+        lastUpdated: new Date().toISOString()
     };
     localStorage.setItem('accountabilityTracker', JSON.stringify(data));
     
-    // Auto-sync to cloud if available
-    if (currentGistId && document.getElementById('github-token').value) {
-        saveToGitHub();
+    // Auto-sync to central storage if enabled
+    if (usingCentralData && CONFIG.AUTO_SAVE_TO_CENTRAL) {
+        saveCentralData().catch(err => {
+            console.error('Failed to save to central storage:', err);
+        });
     }
 }
 
@@ -906,9 +1009,13 @@ function showMessage(text, type) {
     
     document.querySelector('.container').insertBefore(message, document.querySelector('.stats-section'));
     
+    // Auto-remove after delay (except for info messages)
+    const delay = type === 'info' ? 5000 : 3000;
     setTimeout(() => {
-        message.remove();
-    }, 3000);
+        if (message.parentNode) {
+            message.remove();
+        }
+    }, delay);
 }
 
 // Utility functions
