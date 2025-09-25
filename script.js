@@ -284,50 +284,67 @@ async function promptForToken() {
 }
 
 async function saveCentralData(userToken = null) {
-    if (!currentGistId) return false;
+    if (!currentGistId) {
+        console.error('No central Gist ID configured');
+        return false;
+    }
     
     // Get token from user input if not provided
-    let token = userToken || CONFIG.GITHUB_TOKEN || document.getElementById('github-token')?.value;
+    let token = userToken || CONFIG.GITHUB_TOKEN;
     
     // If no token available, prompt user for secure token entry
     if (!token) {
+        console.log('No token available, prompting user...');
         token = await promptForToken();
         if (!token) {
             showMessage('❌ GitHub token required to save to cloud', 'error');
             return false;
         }
+        console.log('Token provided by user');
     }
     
-    const data = {
-        users: users,
-        tasksData: tasksData,
-        nextUserId: nextUserId,
-        currentTaskId: currentTaskId,
-        lastUpdated: new Date().toISOString(),
-        version: CONFIG.VERSION
-    };
+    try {
+        const data = {
+            users: users,
+            tasksData: tasksData,
+            nextUserId: nextUserId,
+            currentTaskId: currentTaskId,
+            lastUpdated: new Date().toISOString(),
+            version: CONFIG.VERSION
+        };
     
-    const gistData = {
-        files: {
-            "accountability-data.json": {
-                content: JSON.stringify(data, null, 2)
+        const gistData = {
+            files: {
+                "accountability-data.json": {
+                    content: JSON.stringify(data, null, 2)
+                }
             }
+        };
+    
+        const headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/vnd.github.v3+json',
+            'Authorization': `token ${token}`
+        };
+    
+        console.log('Saving to Gist:', currentGistId);
+        const response = await fetch(`${GIST_API_URL}/${currentGistId}`, {
+            method: 'PATCH',
+            headers: headers,
+            body: JSON.stringify(gistData)
+        });
+        
+        if (response.ok) {
+            console.log('Data saved to cloud successfully');
+            return true;
+        } else {
+            console.error('Failed to save to cloud:', response.status, response.statusText);
+            return false;
         }
-    };
-    
-    const headers = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/vnd.github.v3+json',
-        'Authorization': `token ${token}`
-    };
-    
-    const response = await fetch(`${GIST_API_URL}/${currentGistId}`, {
-        method: 'PATCH',
-        headers: headers,
-        body: JSON.stringify(gistData)
-    });
-    
-    return response.ok;
+    } catch (error) {
+        console.error('Error saving to cloud:', error);
+        return false;
+    }
 }
 
 async function syncWithCentralData() {
@@ -692,6 +709,8 @@ function handleTaskSubmit(e) {
         saveCentralData().then(success => {
             if (success) {
                 showMessage('✅ Data saved to cloud successfully!', 'success');
+            } else {
+                console.log('Cloud save cancelled or failed');
             }
         }).catch(error => {
             console.error('Cloud save error:', error);
@@ -731,6 +750,8 @@ function handleAddUser(e) {
         saveCentralData().then(success => {
             if (success) {
                 showMessage('✅ User saved to cloud successfully!', 'success');
+            } else {
+                console.log('Cloud save cancelled or failed for user');
             }
         }).catch(error => {
             console.error('Cloud save error:', error);
@@ -929,6 +950,24 @@ async function saveToGitHub() {
     } catch (error) {
         console.error('GitHub save error:', error);
         showMessage('❌ Error saving to GitHub: ' + error.message, 'error');
+    }
+}
+
+// Test function to check token prompt
+async function testTokenPrompt() {
+    console.log('Testing token prompt...');
+    try {
+        const token = await promptForToken();
+        if (token) {
+            showMessage('✅ Token prompt working! (Token received but not saved)', 'success');
+            console.log('Token received (length:', token.length, ')');
+        } else {
+            showMessage('❌ Token prompt cancelled or empty', 'warning');
+            console.log('Token prompt cancelled');
+        }
+    } catch (error) {
+        console.error('Token prompt error:', error);
+        showMessage('❌ Error with token prompt: ' + error.message, 'error');
     }
 }
 
