@@ -5,9 +5,9 @@ let currentTaskId = 0;
 let currentMonth = new Date().getMonth();
 let currentYear = new Date().getFullYear();
 
-// User management - Initialize from config
-let users = CONFIG.DEFAULT_USERS;
-let nextUserId = 3;
+// Initialize with EMPTY data - pure cloud approach
+let users = {};
+let nextUserId = 1;
 
 // GitHub Gist integration for pure cloud storage
 let currentGistId = CONFIG.CENTRAL_GIST_ID || null;
@@ -25,140 +25,58 @@ const TOKEN_SESSION_DURATION = 30 * 60 * 1000; // 30 minutes in milliseconds
 let isCloudOperationInProgress = false;
 let operationType = null; // Track what type of operation is in progress
 
-// Sample data for both people
-let tasksData = {
-    person1: [
-        {
-            id: 1,
-            name: 'LeetCode Dynamic Programming',
-            priority: 'high',
-            status: 'in-progress',
-            deadline: '2025-10-15',
-            update: 'Solved 3 DP problems today: House Robber, Coin Change, and Longest Common Subsequence. Focused on understanding the state transitions and memoization patterns.',
-            dateLogged: '2025-09-25'
-        },
-        {
-            id: 2,
-            name: 'System Design Course - Grokking',
-            priority: 'high',
-            status: 'in-progress',
-            deadline: '2025-10-30',
-            update: 'Completed Chapter 4 on Load Balancers. Practiced designing a URL shortener service. Created detailed notes on horizontal vs vertical scaling.',
-            dateLogged: '2025-09-25'
-        },
-        {
-            id: 3,
-            name: 'React Portfolio Website',
-            priority: 'medium',
-            status: 'not-started',
-            deadline: '2025-11-01',
-            update: 'Set up project structure and installed dependencies. Created wireframes for landing page and project showcase section.',
-            dateLogged: '2025-09-24'
-        },
-        {
-            id: 4,
-            name: 'Binary Trees & Graphs Practice',
-            priority: 'high',
-            status: 'in-progress',
-            deadline: '2025-10-10',
-            update: 'Implemented BFS and DFS from scratch. Solved 5 tree problems including Binary Tree Level Order Traversal and Validate BST.',
-            dateLogged: '2025-09-25'
-        },
-        {
-            id: 5,
-            name: 'Machine Learning Coursera Course',
-            priority: 'medium',
-            status: 'completed',
-            deadline: '2025-09-20',
-            update: 'Completed final project on house price prediction. Achieved 92% accuracy using Random Forest. Submitted certificate.',
-            dateLogged: '2025-09-20'
-        },
-        {
-            id: 6,
-            name: 'Full-Stack E-commerce App',
-            priority: 'low',
-            status: 'not-started',
-            deadline: '2025-12-15',
-            update: 'Researched tech stack options. Decided on MERN stack. Created database schema design for products, users, and orders.',
-            dateLogged: '2025-09-23'
-        }
-    ],
-    person2: [
-        {
-            id: 1,
-            name: 'AWS Solutions Architect Certification',
-            priority: 'high',
-            status: 'in-progress',
-            deadline: '2025-10-20',
-            update: 'Completed 3 practice tests with 85% average score. Reviewed VPC networking and IAM policies. Scheduled exam for next week.',
-            dateLogged: '2025-09-25'
-        },
-        {
-            id: 2,
-            name: 'Coding Interview Prep - Arrays & Strings',
-            priority: 'high',
-            status: 'in-progress',
-            deadline: '2025-10-05',
-            update: 'Solved 8 problems including Two Sum, Valid Anagram, and Group Anagrams. Practiced explaining solutions aloud for 30 minutes.',
-            dateLogged: '2025-09-25'
-        },
-        {
-            id: 3,
-            name: 'Flutter Mobile App Development',
-            priority: 'medium',
-            status: 'in-progress',
-            deadline: '2025-11-30',
-            update: 'Built login screen with validation. Integrated Firebase Auth. Working on main dashboard UI with bottom navigation.',
-            dateLogged: '2025-09-25'
-        },
-        {
-            id: 4,
-            name: 'Docker & Kubernetes Learning',
-            priority: 'medium',
-            status: 'not-started',
-            deadline: '2025-11-15',
-            update: 'Watched intro videos on containerization concepts. Set up Docker Desktop. Next: create first containerized app.',
-            dateLogged: '2025-09-24'
-        },
-        {
-            id: 5,
-            name: 'Data Structures Review',
-            priority: 'high',
-            status: 'completed',
-            deadline: '2025-09-15',
-            update: 'Completed comprehensive review of LinkedLists, Stacks, Queues, and Hash Tables. Implemented all from scratch in Python.',
-            dateLogged: '2025-09-15'
-        },
-        {
-            id: 6,
-            name: 'Personal Finance Tracker App',
-            priority: 'low',
-            status: 'not-started',
-            deadline: '2025-12-31',
-            update: 'Brainstormed features and user stories. Created mockups in Figma. Planning to use React Native for cross-platform development.',
-            dateLogged: '2025-09-22'
-        }
-    ]
-};
+// Initialize with EMPTY task data - pure cloud approach  
+let tasksData = {};
 
 // Initialize the application - pure cloud approach
 document.addEventListener('DOMContentLoaded', async function() {
-    if (usingCentralData) {
-        showMessage('Loading shared data from cloud...', 'info');
+    if (usingCentralData && currentGistId) {
+        showMessage('Loading data from cloud...', 'info');
         try {
             await loadData();
-            showMessage('✅ Connected to shared cloud storage!', 'success');
+            showMessage('✅ Connected to cloud storage!', 'success');
+            
+            // Ensure we have at least default users if cloud is empty
+            if (!users || Object.keys(users).length === 0) {
+                console.log('Cloud data is empty, initializing with default users');
+                users = CONFIG.DEFAULT_USERS;
+                nextUserId = Object.keys(users).length + 1;
+                // Initialize empty task data for each user
+                Object.keys(users).forEach(userId => {
+                    if (!tasksData[userId]) {
+                        tasksData[userId] = [];
+                    }
+                });
+                // Save the initial setup to cloud
+                await saveData();
+            }
         } catch (error) {
-            console.error('Failed to load central data:', error);
-            showMessage('⚠️ Using default data - central data unavailable', 'warning');
+            console.error('Failed to load from cloud:', error);
+            showMessage('⚠️ Cloud unavailable - initializing with default data', 'warning');
+            // Initialize with defaults if cloud fails
+            users = CONFIG.DEFAULT_USERS;
+            nextUserId = Object.keys(users).length + 1;
+            tasksData = {};
+            Object.keys(users).forEach(userId => {
+                tasksData[userId] = [];
+            });
         }
     } else {
-        console.log('Using default sample data - no cloud storage configured');
+        console.log('No cloud storage configured - using defaults');
+        users = CONFIG.DEFAULT_USERS;
+        nextUserId = Object.keys(users).length + 1;
+        tasksData = {};
+        Object.keys(users).forEach(userId => {
+            tasksData[userId] = [];
+        });
     }
+    
+    // Set currentPerson to first available user
+    currentPerson = Object.keys(users)[0] || 'person1';
     
     currentTaskId = Math.max(...Object.values(tasksData).flat().map(t => t.id)) || 0;
     refreshAllViews();
-    updateTokenStatus(); // Show initial token status
+    updateTokenStatus();
     
     // Set up form submissions
     document.getElementById('task-form').addEventListener('submit', handleTaskSubmit);
@@ -198,15 +116,31 @@ async function loadCentralData() {
     
     if (fileContent) {
         let centralData = JSON.parse(fileContent.content);
+        
         // Load central data - completely replace local data
-        if (centralData.users) users = centralData.users;
-        if (centralData.tasksData) tasksData = centralData.tasksData;
+        if (centralData.users) {
+            users = centralData.users;
+            console.log('Loaded users from cloud:', Object.keys(users));
+        }
+        if (centralData.tasksData) {
+            tasksData = centralData.tasksData;
+            const totalTasks = Object.values(tasksData).reduce((sum, tasks) => sum + (tasks?.length || 0), 0);
+            console.log('Loaded tasks from cloud - Total tasks:', totalTasks);
+        }
         if (centralData.nextUserId) nextUserId = centralData.nextUserId;
         if (centralData.currentTaskId) currentTaskId = centralData.currentTaskId;
         
-        console.log('Cloud data loaded:', { 
+        // Validate data integrity
+        Object.keys(users).forEach(userId => {
+            if (!tasksData[userId]) {
+                console.log(`Initializing empty tasks for user: ${userId}`);
+                tasksData[userId] = [];
+            }
+        });
+        
+        console.log('Cloud data loaded successfully:', { 
             userCount: Object.keys(users).length, 
-            totalTasks: Object.values(tasksData).reduce((sum, tasks) => sum + tasks.length, 0)
+            totalTasks: Object.values(tasksData).reduce((sum, tasks) => sum + (tasks?.length || 0), 0)
         });
     } else {
         throw new Error('No data found in central storage');
@@ -582,33 +516,56 @@ function refreshAllViews() {
     }
 }
 
-// Render person buttons dynamically
+// Render person buttons dynamically with validation
 function renderPersonButtons() {
     const container = document.getElementById('person-buttons');
+    if (!container) {
+        console.error('Person buttons container not found');
+        return;
+    }
+    
     container.innerHTML = '';
     
-    Object.values(users).forEach((user, index) => {
+    if (!users || Object.keys(users).length === 0) {
+        console.warn('No users available to render');
+        return;
+    }
+    
+    const userList = Object.values(users);
+    const currentUserExists = users[currentPerson];
+    
+    userList.forEach((user, index) => {
         const button = document.createElement('button');
-        button.className = `person-btn ${index === 0 ? 'active' : ''}`;
+        const isActive = currentUserExists && user.id === currentPerson;
+        button.className = `person-btn ${isActive ? 'active' : ''}`;
         button.onclick = () => switchPerson(user.id);
         button.innerHTML = `<i class="fas fa-user"></i> ${user.name}'s Tracker`;
         container.appendChild(button);
     });
+    
+    console.log(`Rendered ${userList.length} person buttons, active: ${currentPerson}`);
 }
 
-// Person switching
+// Person switching with validation
 function switchPerson(person) {
-    currentPerson = person;
+    if (!users[person]) {
+        console.error('User not found:', person);
+        return;
+    }
     
-    // Update button states
-    document.querySelectorAll('.person-btn').forEach(btn => btn.classList.remove('active'));
-    event.target.classList.add('active');
+    currentPerson = person;
+    console.log('Switched to person:', person);
+    
+    // Update button states - find the clicked button properly
+    document.querySelectorAll('.person-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.textContent.includes(users[person].name)) {
+            btn.classList.add('active');
+        }
+    });
     
     // Update display
-    updateStats();
-    renderTasks();
-    renderKanbanBoard();
-    renderCalendar();
+    refreshAllViews();
 }
 
 // View switching
@@ -628,13 +585,35 @@ function switchView(view) {
     }
 }
 
-// Update statistics
+// Update statistics with proper validation
 function updateStats() {
+    // Ensure currentPerson exists and has data
+    if (!currentPerson || !users[currentPerson]) {
+        console.warn('Current person not found, switching to first available user');
+        currentPerson = Object.keys(users)[0];
+        if (!currentPerson) {
+            console.error('No users available');
+            document.getElementById('total-tasks').textContent = 0;
+            document.getElementById('completed-tasks').textContent = 0;
+            document.getElementById('in-progress-tasks').textContent = 0;
+            document.getElementById('progress-percentage').textContent = '0%';
+            return;
+        }
+    }
+    
+    // Get tasks for current person, ensuring it's an array
     const tasks = tasksData[currentPerson] || [];
+    if (!Array.isArray(tasks)) {
+        console.error('Tasks data is not an array for user:', currentPerson);
+        tasksData[currentPerson] = [];
+    }
+    
     const total = tasks.length;
     const completed = tasks.filter(task => task.status === 'completed').length;
     const inProgress = tasks.filter(task => task.status === 'in-progress').length;
     const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
+    
+    console.log(`Stats for ${currentPerson}:`, { total, completed, inProgress, percentage });
     
     document.getElementById('total-tasks').textContent = total;
     document.getElementById('completed-tasks').textContent = completed;
@@ -824,12 +803,24 @@ function navigateMonth(direction) {
     renderCalendar();
 }
 
-// Get filtered tasks
+// Get filtered tasks with validation
 function getFilteredTasks() {
+    if (!currentPerson || !users[currentPerson] || !tasksData[currentPerson]) {
+        console.warn('No tasks available for current person:', currentPerson);
+        return [];
+    }
+    
     let tasks = tasksData[currentPerson] || [];
     
-    const priorityFilter = document.getElementById('priority-filter').value;
-    const statusFilter = document.getElementById('status-filter').value;
+    // Ensure tasks is an array
+    if (!Array.isArray(tasks)) {
+        console.error('Tasks data is not an array, resetting to empty array');
+        tasksData[currentPerson] = [];
+        return [];
+    }
+    
+    const priorityFilter = document.getElementById('priority-filter')?.value || 'all';
+    const statusFilter = document.getElementById('status-filter')?.value || 'all';
     
     if (priorityFilter !== 'all') {
         tasks = tasks.filter(task => task.priority === priorityFilter);
