@@ -566,20 +566,24 @@ tr:hover td {
     backdrop-filter: blur(4px);
     overflow-y: auto;
     overflow-x: hidden;
+    padding: 20px;
+    box-sizing: border-box;
 }
 
 .modal-content {
     background: white;
-    margin: 50px auto;
+    margin: 0 auto;
     padding: 0;
     border-radius: 16px;
-    width: 90%;
+    width: 100%;
     max-width: 600px;
-    max-height: none;
+    max-height: calc(100vh - 40px);
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
     animation: modalSlideIn 0.3s ease;
     position: relative;
-    min-height: fit-content;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 @keyframes modalSlideIn {
@@ -599,6 +603,7 @@ tr:hover td {
     align-items: center;
     padding: 24px;
     border-bottom: 1px solid #e2e8f0;
+    flex-shrink: 0;
 }
 
 .modal-header h2 {
@@ -621,7 +626,7 @@ tr:hover td {
 }
 
 .modal-body {
-    max-height: calc(80vh - 120px);
+    flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
     padding: 0;
@@ -774,17 +779,13 @@ textarea {
     }
     
     .modal {
-        padding: 0;
+        padding: 10px;
     }
     
     .modal-content {
-        margin: 20px auto;
-        width: calc(100% - 40px);
+        width: 100%;
+        max-height: calc(100vh - 20px);
         border-radius: 12px;
-    }
-    
-    .modal-body {
-        max-height: calc(90vh - 120px);
     }
     
     .form-row {
