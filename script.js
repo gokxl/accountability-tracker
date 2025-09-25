@@ -193,20 +193,18 @@ async function loadCentralData() {
     const gist = await response.json();
     const fileContent = gist.files['accountability-data.json'];
     
-    if (fileContent) {
-        const centralData = JSON.parse(fileContent.content);
-        
-        // Load central data
-        if (centralData.users) users = centralData.users;
-        if (centralData.tasksData) tasksData = centralData.tasksData;
-        if (centralData.nextUserId) nextUserId = centralData.nextUserId;
-        if (centralData.currentTaskId) currentTaskId = centralData.currentTaskId;
-        
-        // Also save to local storage as backup
-        saveData();
-    } else {
-        throw new Error('No data found in central storage');
-    }
+        if (fileContent) {
+            let centralData = JSON.parse(fileContent.content);
+            // Load central data
+            if (centralData.users) users = centralData.users;
+            if (centralData.tasksData) tasksData = centralData.tasksData;
+            if (centralData.nextUserId) nextUserId = centralData.nextUserId;
+            if (centralData.currentTaskId) currentTaskId = centralData.currentTaskId;
+            // Also save to local storage as backup
+            saveData();
+        } else {
+            throw new Error('No data found in central storage');
+        }
 }
 
 async function saveCentralData() {
