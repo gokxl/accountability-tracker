@@ -163,42 +163,44 @@
                 <h2 id="modal-title">Add New Task</h2>
                 <button class="close-btn" onclick="closeModal()">&times;</button>
             </div>
-            <form id="task-form">
-                <div class="form-group">
-                    <label for="task-name">Task/Focus Area *</label>
-                    <input type="text" id="task-name" required placeholder="e.g., LeetCode Dynamic Programming">
-                </div>
-                <div class="form-row">
+            <div class="modal-body">
+                <form id="task-form">
                     <div class="form-group">
-                        <label for="task-priority">Priority *</label>
-                        <select id="task-priority" required>
-                            <option value="high">High</option>
-                            <option value="medium" selected>Medium</option>
-                            <option value="low">Low</option>
-                        </select>
+                        <label for="task-name">Task/Focus Area *</label>
+                        <input type="text" id="task-name" required placeholder="e.g., LeetCode Dynamic Programming">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="task-priority">Priority *</label>
+                            <select id="task-priority" required>
+                                <option value="high">High</option>
+                                <option value="medium" selected>Medium</option>
+                                <option value="low">Low</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="task-status">Status *</label>
+                            <select id="task-status" required>
+                                <option value="not-started" selected>Not Started</option>
+                                <option value="in-progress">In Progress</option>
+                                <option value="completed">Completed</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="form-group">
-                        <label for="task-status">Status *</label>
-                        <select id="task-status" required>
-                            <option value="not-started" selected>Not Started</option>
-                            <option value="in-progress">In Progress</option>
-                            <option value="completed">Completed</option>
-                        </select>
+                        <label for="task-deadline">Deadline</label>
+                        <input type="date" id="task-deadline">
                     </div>
-                </div>
-                <div class="form-group">
-                    <label for="task-deadline">Deadline</label>
-                    <input type="date" id="task-deadline">
-                </div>
-                <div class="form-group">
-                    <label for="task-update">Today's Update/Action *</label>
-                    <textarea id="task-update" required placeholder="What did you accomplish today? e.g., 'Solved 3 DP problems: House Robber, Coin Change, and Longest Common Subsequence'"></textarea>
-                </div>
-                <div class="form-actions">
-                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Save Task</button>
-                </div>
-            </form>
+                    <div class="form-group">
+                        <label for="task-update">Today's Update/Action *</label>
+                        <textarea id="task-update" required placeholder="What did you accomplish today? e.g., 'Solved 3 DP problems: House Robber, Coin Change, and Longest Common Subsequence'"></textarea>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Save Task</button>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 
@@ -209,16 +211,18 @@
                 <h2>Add New User</h2>
                 <button class="close-btn" onclick="closeAddUserModal()">&times;</button>
             </div>
-            <form id="add-user-form">
-                <div class="form-group">
-                    <label for="user-name">User Name *</label>
-                    <input type="text" id="user-name" required placeholder="Enter user name">
-                </div>
-                <div class="form-actions">
-                    <button type="button" class="btn btn-secondary" onclick="closeAddUserModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Add User</button>
-                </div>
-            </form>
+            <div class="modal-body">
+                <form id="add-user-form">
+                    <div class="form-group">
+                        <label for="user-name">User Name *</label>
+                        <input type="text" id="user-name" required placeholder="Enter user name">
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="closeAddUserModal()">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Add User</button>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 
@@ -229,8 +233,10 @@
                 <h2>Manage Users</h2>
                 <button class="close-btn" onclick="closeManageUsersModal()">&times;</button>
             </div>
-            <div class="users-list" id="users-list">
-                <!-- Users will be listed here -->
+            <div class="modal-body">
+                <div class="users-list" id="users-list">
+                    <!-- Users will be listed here -->
+                </div>
             </div>
         </div>
     </div>
@@ -242,69 +248,71 @@
                 <h2><i class="fas fa-share-alt"></i> Share Tracker</h2>
                 <button class="close-btn" onclick="closeShareModal()">&times;</button>
             </div>
-            <div class="share-options">
-                <div class="share-method">
-                    <h3><i class="fas fa-download"></i> Export Data</h3>
-                    <p>Download your data to share via any method</p>
-                    <button class="btn btn-primary" onclick="exportData()">
-                        <i class="fas fa-download"></i> Download JSON
-                    </button>
-                </div>
-                <div class="share-method">
-                    <h3><i class="fas fa-cloud"></i> Google Drive Share</h3>
-                    <p>Upload the tracker folder to Google Drive and share the link</p>
-                    <div class="instructions">
-                        <ol>
-                            <li>Upload entire "Personal Tracker" folder to Google Drive</li>
-                            <li>Right-click folder → Share → Anyone with link can view</li>
-                            <li>Send link to collaborators</li>
-                        </ol>
+            <div class="modal-body">
+                <div class="share-options">
+                    <div class="share-method">
+                        <h3><i class="fas fa-download"></i> Export Data</h3>
+                        <p>Download your data to share via any method</p>
+                        <button class="btn btn-primary" onclick="exportData()">
+                            <i class="fas fa-download"></i> Download JSON
+                        </button>
                     </div>
-                </div>
-                <div class="share-method">
-                    <h3><i class="fas fa-cloud"></i> GitHub Cloud Storage</h3>
-                    <p>Save your data permanently in the cloud for free</p>
-                    <div id="github-auth-section">
-                        <input type="text" id="github-token" placeholder="GitHub Personal Access Token (optional)" 
-                               style="width: 100%; padding: 8px; margin: 8px 0; border: 1px solid #e2e8f0; border-radius: 6px;">
-                        <button class="btn btn-primary" onclick="saveToGitHub()">
-                            <i class="fas fa-cloud-upload-alt"></i> Save to Cloud
-                        </button>
-                        <button class="btn btn-secondary" onclick="loadFromGitHub()">
-                            <i class="fas fa-cloud-download-alt"></i> Load from Cloud
-                        </button>
-                        <div id="gist-url-display" style="margin-top: 8px; display: none;">
-                            <label>Your Cloud Storage URL:</label>
-                            <input type="text" id="gist-url" readonly style="width: 100%; padding: 6px; font-size: 12px;">
-                            <button class="btn btn-secondary" onclick="copyGistUrl()" style="margin-top: 4px;">
-                                <i class="fas fa-copy"></i> Copy URL
-                            </button>
+                    <div class="share-method">
+                        <h3><i class="fas fa-cloud"></i> Google Drive Share</h3>
+                        <p>Upload the tracker folder to Google Drive and share the link</p>
+                        <div class="instructions">
+                            <ol>
+                                <li>Upload entire "Personal Tracker" folder to Google Drive</li>
+                                <li>Right-click folder → Share → Anyone with link can view</li>
+                                <li>Send link to collaborators</li>
+                            </ol>
                         </div>
                     </div>
-                    <div class="instructions">
-                        <p><strong>How it works:</strong></p>
-                        <ol>
-                            <li>Data is saved to GitHub Gists (free, permanent storage)</li>
-                            <li>Works without token for public storage</li>
-                            <li>Add token for private storage and better reliability</li>
-                            <li>Share the Gist URL with collaborators</li>
-                        </ol>
+                    <div class="share-method">
+                        <h3><i class="fas fa-cloud"></i> GitHub Cloud Storage</h3>
+                        <p>Save your data permanently in the cloud for free</p>
+                        <div id="github-auth-section">
+                            <input type="text" id="github-token" placeholder="GitHub Personal Access Token (optional)" 
+                                   style="width: 100%; padding: 8px; margin: 8px 0; border: 1px solid #e2e8f0; border-radius: 6px;">
+                            <button class="btn btn-primary" onclick="saveToGitHub()">
+                                <i class="fas fa-cloud-upload-alt"></i> Save to Cloud
+                            </button>
+                            <button class="btn btn-secondary" onclick="loadFromGitHub()">
+                                <i class="fas fa-cloud-download-alt"></i> Load from Cloud
+                            </button>
+                            <div id="gist-url-display" style="margin-top: 8px; display: none;">
+                                <label>Your Cloud Storage URL:</label>
+                                <input type="text" id="gist-url" readonly style="width: 100%; padding: 6px; font-size: 12px;">
+                                <button class="btn btn-secondary" onclick="copyGistUrl()" style="margin-top: 4px;">
+                                    <i class="fas fa-copy"></i> Copy URL
+                                </button>
+                            </div>
+                        </div>
+                        <div class="instructions">
+                            <p><strong>How it works:</strong></p>
+                            <ol>
+                                <li>Data is saved to GitHub Gists (free, permanent storage)</li>
+                                <li>Works without token for public storage</li>
+                                <li>Add token for private storage and better reliability</li>
+                                <li>Share the Gist URL with collaborators</li>
+                            </ol>
+                        </div>
                     </div>
-                </div>
-                <div class="share-method">
-                    <h3><i class="fas fa-table"></i> Google Sheets Collaboration</h3>
-                    <p>Use Google Sheets for real-time collaboration</p>
-                    <button class="btn btn-primary" onclick="exportCSV()">
-                        <i class="fas fa-file-csv"></i> Export CSV for Sheets
-                    </button>
-                </div>
-                <div class="share-method">
-                    <h3><i class="fas fa-upload"></i> Import Data</h3>
-                    <p>Import data from another user</p>
-                    <input type="file" id="import-file" accept=".json" style="display: none;" onchange="importData(event)">
-                    <button class="btn btn-secondary" onclick="document.getElementById('import-file').click()">
-                        <i class="fas fa-upload"></i> Import JSON
-                    </button>
+                    <div class="share-method">
+                        <h3><i class="fas fa-table"></i> Google Sheets Collaboration</h3>
+                        <p>Use Google Sheets for real-time collaboration</p>
+                        <button class="btn btn-primary" onclick="exportCSV()">
+                            <i class="fas fa-file-csv"></i> Export CSV for Sheets
+                        </button>
+                    </div>
+                    <div class="share-method">
+                        <h3><i class="fas fa-upload"></i> Import Data</h3>
+                        <p>Import data from another user</p>
+                        <input type="file" id="import-file" accept=".json" style="display: none;" onchange="importData(event)">
+                        <button class="btn btn-secondary" onclick="document.getElementById('import-file').click()">
+                            <i class="fas fa-upload"></i> Import JSON
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

@@ -620,9 +620,16 @@ tr:hover td {
     color: #64748b;
 }
 
+.modal-body {
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+    padding: 0;
+}
+
 /* Form Styles */
 form {
     padding: 24px;
+    margin: 0;
 }
 
 .form-group {
