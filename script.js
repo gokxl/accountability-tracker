@@ -17,7 +17,7 @@ const GIST_API_URL = 'https://api.github.com/gists';
 let usingCentralData = !!CONFIG.CENTRAL_GIST_ID;
 
 // Sample data for both people
-const tasksData = {
+let tasksData = {
     person1: [
         {
             id: 1,
