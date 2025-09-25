@@ -278,9 +278,14 @@
                             <button class="btn btn-secondary" onclick="loadFromGitHub()">
                                 <i class="fas fa-cloud-download-alt"></i> Load from Cloud
                             </button>
-                            <button class="btn btn-secondary" onclick="testTokenPrompt()" style="margin-top: 8px;">
-                                <i class="fas fa-test-tube"></i> Test Token Prompt
-                            </button>
+                            <div style="margin-top: 8px;">
+                                <button class="btn btn-secondary" onclick="testTokenPrompt()" style="margin-right: 8px;">
+                                    <i class="fas fa-test-tube"></i> Test Token
+                                </button>
+                                <button class="btn btn-secondary" onclick="clearSessionToken()">
+                                    <i class="fas fa-key"></i> Clear Token
+                                </button>
+                            </div>
                             <div id="gist-url-display" style="margin-top: 8px; display: none;">
                                 <label>Your Cloud Storage URL:</label>
                                 <input type="text" id="gist-url" readonly style="width: 100%; padding: 6px; font-size: 12px;">
@@ -290,14 +295,15 @@
                             </div>
                         </div>
                         <div class="instructions">
-                            <p><strong>🔒 Secure Cloud Sync:</strong></p>
+                            <p><strong>🔒 Smart Token System:</strong></p>
                             <ol>
-                                <li>Click "Save to Cloud" and enter your GitHub token when prompted</li>
-                                <li>Your token is used only for saving and never stored</li>
+                                <li>First time: Enter your GitHub token when prompted</li>
+                                <li>Token is cached for 30 minutes - no more prompts!</li>
                                 <li>Data loads automatically for all users (no token needed)</li>
-                                <li>Share this website URL with collaborators for instant sync</li>
+                                <li>Share this website URL with collaborators</li>
+                                <li>Use "Clear Token" to reset if needed</li>
                             </ol>
-                            <p><strong>✅ Benefits:</strong> Free, permanent storage • Real-time collaboration • Secure token handling</p>
+                            <p><strong>✅ Benefits:</strong> One token per session • Auto-save • Real-time sync • Secure</p>
                         </div>
                     </div>
                     <div class="share-method">

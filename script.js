@@ -16,6 +16,11 @@ const GIST_API_URL = 'https://api.github.com/gists';
 // Centralized data flag
 let usingCentralData = !!CONFIG.CENTRAL_GIST_ID;
 
+// Session-based token storage (in memory only)
+let sessionToken = null;
+let tokenExpiry = null;
+const TOKEN_SESSION_DURATION = 30 * 60 * 1000; // 30 minutes in milliseconds
+
 // Sample data for both people
 let tasksData = {
     person1: [
@@ -155,6 +160,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     renderKanbanBoard();
     renderCalendar();
     renderPersonButtons();
+    updateTokenStatus(); // Show initial token status
     
     // Set up form submissions
     document.getElementById('task-form').addEventListener('submit', handleTaskSubmit);
@@ -281,6 +287,88 @@ async function promptForToken() {
             }
         });
     });
+}
+
+// Smart token management with session caching
+async function getSessionToken() {
+    // Check if we have a valid session token
+    if (sessionToken && tokenExpiry && Date.now() < tokenExpiry) {
+        console.log('Using cached session token');
+        return sessionToken;
+    }
+    
+    // Check for configured token
+    if (CONFIG.GITHUB_TOKEN) {
+        return CONFIG.GITHUB_TOKEN;
+    }
+    
+    // No valid token, prompt user
+    console.log('No valid session token, prompting user...');
+    const token = await promptForToken();
+    
+    if (token) {
+        // Cache the token for the session
+        sessionToken = token;
+        tokenExpiry = Date.now() + TOKEN_SESSION_DURATION;
+        console.log('Token cached for session (30 minutes)');
+        showMessage('🔑 Token saved for this session (30 min) - no more prompts needed!', 'success');
+        updateTokenStatus();
+    }
+    
+    return token;
+}
+
+// Update token status indicator
+function updateTokenStatus() {
+    const statusCard = document.getElementById('cloud-status-card');
+    if (statusCard) {
+        if (sessionToken && tokenExpiry && Date.now() < tokenExpiry) {
+            const remainingTime = Math.ceil((tokenExpiry - Date.now()) / (1000 * 60));
+            statusCard.innerHTML = `
+                <div class="status-indicator">
+                    <div class="status-dot active"></div>
+                    <div class="status-text">
+                        <strong>🔑 Token Active</strong>
+                        <small>${remainingTime} min remaining</small>
+                    </div>
+                </div>
+            `;
+        } else if (usingCentralData) {
+            statusCard.innerHTML = `
+                <div class="status-indicator">
+                    <div class="status-dot warning"></div>
+                    <div class="status-text">
+                        <strong>⚠️ Token Needed</strong>
+                        <small>Will prompt on next save</small>
+                    </div>
+                </div>
+            `;
+        }
+    }
+}
+
+// Clear session token manually
+function clearSessionToken() {
+    sessionToken = null;
+    tokenExpiry = null;
+    updateTokenStatus();
+    showMessage('🔓 Session token cleared', 'info');
+}
+
+// Improved save function with smart token handling
+async function saveCentralDataWithToken() {
+    if (!currentGistId) {
+        console.error('No central Gist ID configured');
+        return false;
+    }
+    
+    const token = await getSessionToken();
+    if (!token) {
+        showMessage('❌ GitHub token required to save to cloud', 'error');
+        return false;
+    }
+    
+    return await saveCentralData(token);
 }
 
 async function saveCentralData(userToken = null) {
@@ -421,8 +509,9 @@ function updateStats() {
     document.getElementById('in-progress-tasks').textContent = inProgress;
     document.getElementById('progress-percentage').textContent = percentage + '%';
     
-    // Update cloud status
+    // Update cloud status and token status
     updateCloudStatus();
+    updateTokenStatus();
 }
 
 function updateCloudStatus() {
@@ -706,7 +795,7 @@ function handleTaskSubmit(e) {
     
     // Auto-save to cloud if centralized data is enabled
     if (usingCentralData) {
-        saveCentralData().then(success => {
+        saveCentralDataWithToken().then(success => {
             if (success) {
                 showMessage('✅ Data saved to cloud successfully!', 'success');
             } else {
@@ -747,7 +836,7 @@ function handleAddUser(e) {
     
     // Auto-save to cloud if centralized data is enabled
     if (usingCentralData) {
-        saveCentralData().then(success => {
+        saveCentralDataWithToken().then(success => {
             if (success) {
                 showMessage('✅ User saved to cloud successfully!', 'success');
             } else {
@@ -825,6 +914,20 @@ function deleteUser(userId) {
         renderCalendar();
         saveData();
         showMessage('User deleted successfully!', 'success');
+        
+        // Auto-save to cloud if centralized data is enabled
+        if (usingCentralData) {
+            saveCentralDataWithToken().then(success => {
+                if (success) {
+                    showMessage('✅ User deletion saved to cloud!', 'success');
+                } else {
+                    console.log('Cloud save cancelled or failed for user deletion');
+                }
+            }).catch(error => {
+                console.error('Cloud save error:', error);
+                showMessage('⚠️ Could not save to cloud, data saved locally', 'warning');
+            });
+        }
     }
 }
 
@@ -941,7 +1044,7 @@ function importData(event) {
 async function saveToGitHub() {
     try {
         // Use centralized save function for consistency
-        const success = await saveCentralData();
+        const success = await saveCentralDataWithToken();
         if (success) {
             showMessage('✅ Data successfully saved to GitHub!', 'success');
         } else {
