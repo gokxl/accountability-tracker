@@ -315,8 +315,8 @@ function clearSessionToken() {
 // Robust cloud save with proper error handling
 async function saveData() {
     if (!usingCentralData || !currentGistId) {
-        console.log('No cloud storage configured - data only in memory');
-        return false;
+        console.log('⚠️ No cloud storage configured - data only in memory');
+        throw new Error('Cloud storage not configured');
     }
     
     // Show saving state
@@ -327,51 +327,44 @@ async function saveData() {
     }
     
     try {
-        console.log('Starting cloud save operation...');
-        const success = await saveCentralDataWithToken();
+        console.log('🎯 Starting saveData operation...');
+        await saveCentralDataWithToken(); // This will throw on failure
         
-        if (success) {
-            console.log('✅ Data successfully saved to cloud');
-            if (statusElement) {
-                statusElement.textContent = '☁️';
-                statusElement.parentElement.title = 'Connected to cloud storage';
-            }
-            return true;
-        } else {
-            console.log('❌ Cloud save failed');
-            if (statusElement) {
-                statusElement.textContent = '⚠️';
-                statusElement.parentElement.title = 'Cloud save failed';
-            }
-            return false;
+        console.log('✅ saveData completed successfully');
+        if (statusElement) {
+            statusElement.textContent = '☁️';
+            statusElement.parentElement.title = 'Connected to cloud storage - last saved: ' + new Date().toLocaleTimeString();
         }
+        
+        return true; // Keep returning true for backward compatibility
+        
     } catch (error) {
-        console.error('Save operation failed:', error);
-        showMessage('❌ Failed to save data to cloud: ' + error.message, 'error');
+        console.error('❌ saveData failed:', error);
         if (statusElement) {
             statusElement.textContent = '❌';
-            statusElement.parentElement.title = 'Cloud save error';
+            statusElement.parentElement.title = 'Cloud save failed: ' + error.message;
         }
-        return false;
+        
+        throw error; // Re-throw the error so callers can handle it
     }
 }
 
-// Direct cloud save with robust error handling
+// BULLETPROOF cloud save coordinator with full error handling
 async function saveCentralDataWithToken() {
     if (!currentGistId) {
-        console.error('No central Gist ID configured');
+        console.error('❌ No central Gist ID configured');
         showMessage('❌ Cloud storage not configured', 'error');
-        return false;
+        throw new Error('Cloud storage not configured');
     }
     
     // Prevent concurrent operations (except token prompts)
     if (isCloudOperationInProgress && operationType !== 'token-prompt') {
-        console.log('Another cloud operation is in progress, waiting...');
-        // Wait a bit and retry
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        console.log('⏳ Another cloud operation is in progress, waiting...');
+        // Wait and retry once
+        await new Promise(resolve => setTimeout(resolve, 2000));
         if (isCloudOperationInProgress) {
-            console.log('Cloud operation still in progress, aborting');
-            return false;
+            console.log('❌ Cloud operation still in progress, aborting');
+            throw new Error('Another cloud operation is in progress');
         }
     }
     
@@ -379,81 +372,94 @@ async function saveCentralDataWithToken() {
     operationType = 'save';
     
     try {
-        console.log('Getting session token for cloud save...');
+        console.log('🚀 Starting bulletproof cloud save operation...');
+        
+        // Get session token
         const token = await getSessionToken();
         if (!token) {
-            showMessage('❌ GitHub token required to save to cloud', 'error');
-            return false;
+            throw new Error('GitHub token required to save to cloud');
+        }
+        console.log('✅ Token acquired successfully');
+        
+        // Perform the actual save
+        console.log('💾 Calling saveCentralData...');
+        await saveCentralData(token);
+        
+        console.log('✅ CLOUD SAVE COMPLETED SUCCESSFULLY!');
+        showMessage('✅ Data saved to cloud successfully!', 'success');
+        
+        // Update status indicator
+        const statusElement = document.getElementById('cloud-status');
+        if (statusElement) {
+            statusElement.textContent = '☁️';
+            statusElement.parentElement.title = 'Connected to cloud storage - last saved: ' + new Date().toLocaleTimeString();
         }
         
-        console.log('Attempting cloud save with token...');
-        const result = await saveCentralData(token);
+        return true;
         
-        if (result) {
-            console.log('✅ Cloud save completed successfully');
-            
-            // Force reload from cloud to ensure consistency
-            setTimeout(async () => {
-                try {
-                    console.log('Reloading from cloud to verify save...');
-                    await loadCentralData();
-                    refreshAllViews();
-                    console.log('✅ Data consistency verified');
-                } catch (error) {
-                    console.error('Failed to verify save by reloading:', error);
-                    showMessage('⚠️ Save completed but verification failed', 'warning');
-                }
-            }, 500);
-        } else {
-            console.log('❌ Cloud save failed');
-        }
-        
-        return result;
     } catch (error) {
-        console.error('Error in saveCentralDataWithToken:', error);
-        showMessage('❌ Cloud save error: ' + error.message, 'error');
-        return false;
+        console.error('❌ CLOUD SAVE FAILED:', error);
+        showMessage('❌ Cloud save failed: ' + error.message, 'error');
+        
+        // Update status indicator to show error
+        const statusElement = document.getElementById('cloud-status');
+        if (statusElement) {
+            statusElement.textContent = '❌';
+            statusElement.parentElement.title = 'Cloud save failed: ' + error.message;
+        }
+        
+        throw error; // Re-throw so calling functions can handle the failure
+        
     } finally {
         isCloudOperationInProgress = false;
         operationType = null;
+        console.log('🔓 Cloud operation lock released');
     }
 }
 
-// Enhanced cloud save with better error handling and validation
+// COMPLETELY REWRITTEN - Bulletproof cloud save with full debugging
 async function saveCentralData(userToken = null) {
     if (!currentGistId) {
-        console.error('No central Gist ID configured');
-        return false;
+        console.error('❌ No central Gist ID configured');
+        throw new Error('No central Gist ID configured');
     }
     
     // Get token from session cache, config, or user input
     let token = userToken || CONFIG.GITHUB_TOKEN;
     
     if (!token) {
-        console.log('No token available, prompting user...');
+        console.log('🔑 No token available, prompting user...');
         token = await promptForToken();
         if (!token) {
-            showMessage('❌ GitHub token required to save to cloud', 'error');
-            return false;
+            console.error('❌ No GitHub token provided');
+            throw new Error('GitHub token required to save to cloud');
         }
-        console.log('Token provided by user');
+        console.log('✅ Token provided by user');
     }
     
     // Validate that we have data to save
     if (!users || Object.keys(users).length === 0) {
-        showMessage('❌ No user data to save', 'error');
-        return false;
+        console.error('❌ No user data to save');
+        throw new Error('No user data to save');
     }
     
     try {
+        // Create the data payload
         const data = {
             users: users,
             tasksData: tasksData,
             nextUserId: nextUserId,
             currentTaskId: currentTaskId,
             lastUpdated: new Date().toISOString(),
-            version: CONFIG.VERSION || '2.0'
+            version: CONFIG.VERSION || '2.1'
         };
+        
+        console.log('📤 Preparing to save to cloud:', {
+            users: Object.keys(data.users).length,
+            totalTasks: Object.values(data.tasksData).reduce((sum, tasks) => sum + (tasks?.length || 0), 0),
+            timestamp: data.lastUpdated,
+            gistId: currentGistId
+        });
     
         const gistData = {
             files: {
@@ -469,7 +475,8 @@ async function saveCentralData(userToken = null) {
             'Authorization': `token ${token}`
         };
     
-        console.log('Saving to Gist:', currentGistId, '- Users:', Object.keys(users).length, '- Total tasks:', Object.values(tasksData).reduce((sum, tasks) => sum + tasks.length, 0));
+        console.log(`🚀 Sending PATCH request to: ${GIST_API_URL}/${currentGistId}`);
+        console.log('📝 Headers:', { ...headers, 'Authorization': 'token [HIDDEN]' });
         
         const response = await fetch(`${GIST_API_URL}/${currentGistId}`, {
             method: 'PATCH',
@@ -477,46 +484,67 @@ async function saveCentralData(userToken = null) {
             body: JSON.stringify(gistData)
         });
         
+        console.log(`📡 Response status: ${response.status} ${response.statusText}`);
+        
         if (response.ok) {
             const result = await response.json();
-            console.log('✅ Data saved to cloud successfully at:', new Date().toLocaleTimeString());
-            console.log('Cloud data summary:', {
-                users: Object.keys(data.users).length,
-                totalTasks: Object.values(data.tasksData).reduce((sum, tasks) => sum + tasks.length, 0),
-                lastUpdated: data.lastUpdated
+            console.log('✅ SUCCESSFUL CLOUD SAVE!');
+            console.log('📊 Cloud response summary:', {
+                id: result.id,
+                updated_at: result.updated_at,
+                files: Object.keys(result.files)
             });
+            
+            // Verify the save by reading back immediately
+            setTimeout(async () => {
+                try {
+                    console.log('🔍 Verifying save by reading back...');
+                    const verifyResponse = await fetch(`${GIST_API_URL}/${currentGistId}`);
+                    if (verifyResponse.ok) {
+                        const verifyGist = await verifyResponse.json();
+                        const savedData = JSON.parse(verifyGist.files['accountability-data.json'].content);
+                        console.log('✅ VERIFICATION SUCCESS - Data confirmed in cloud:', {
+                            users: Object.keys(savedData.users).length,
+                            lastUpdated: savedData.lastUpdated,
+                            verified_at: new Date().toISOString()
+                        });
+                    }
+                } catch (verifyError) {
+                    console.warn('⚠️ Could not verify save:', verifyError);
+                }
+            }, 1000);
             
             return true;
         } else {
             const errorText = await response.text();
-            console.error('❌ Failed to save to cloud:', response.status, response.statusText);
+            console.error('❌ CLOUD SAVE FAILED');
+            console.error('Status:', response.status, response.statusText);
             console.error('Error details:', errorText);
             
             // Provide specific error messages
+            let errorMessage = 'Failed to save to cloud';
             if (response.status === 401) {
-                showMessage('❌ Invalid GitHub token - please check your token', 'error');
+                errorMessage = 'Invalid GitHub token - please check your token';
                 // Clear the invalid session token
                 sessionToken = null;
                 tokenExpiry = null;
                 updateTokenStatus();
             } else if (response.status === 404) {
-                showMessage('❌ Gist not found - please check the Gist ID', 'error');
-            } else {
-                showMessage('❌ Failed to save to cloud - please try again', 'error');
+                errorMessage = 'Gist not found - please check the Gist ID';
+            } else if (response.status === 422) {
+                errorMessage = 'Invalid data format - please check your data';
             }
             
-            return false;
+            throw new Error(errorMessage);
         }
     } catch (error) {
-        console.error('❌ Error saving to cloud:', error);
+        console.error('❌ CRITICAL ERROR in saveCentralData:', error);
         
         if (error.name === 'TypeError' && error.message.includes('fetch')) {
-            showMessage('❌ Network error - check your internet connection', 'error');
+            throw new Error('Network error - check your internet connection');
         } else {
-            showMessage('❌ Unexpected error saving to cloud', 'error');
+            throw error;
         }
-        
-        return false;
     }
 }
 
@@ -1055,45 +1083,52 @@ async function handleAddUser(e) {
         return;
     }
     
+    console.log(`👤 Starting addition of user: ${userName}`);
+    
     // Show loading state
-    showMessage('👤 Adding user...', 'info');
+    showMessage('👤 Adding user to cloud...', 'info');
     
     const userId = `person${nextUserId}`;
     const newUser = { name: userName, id: userId };
+    const originalNextUserId = nextUserId;
     
     try {
+        console.log('📝 Adding user to data structures...');
+        
         // Add user to data structures
         users[userId] = newUser;
         tasksData[userId] = [];
         nextUserId++;
         
-        // Try to save to cloud BEFORE updating UI
-        if (usingCentralData) {
-            const success = await saveData();
-            if (!success) {
-                // Rollback the addition if cloud save failed
-                delete users[userId];
-                delete tasksData[userId];
-                nextUserId--;
-                showMessage('❌ Failed to save user to cloud - user not added', 'error');
-                return;
-            }
-        }
+        console.log('💾 Attempting to save new user to cloud...');
         
-        // Only update UI after successful cloud save (or if not using cloud)
+        // CRITICAL: Save to cloud and wait for confirmation
+        await saveData(); // This will throw on failure
+        
+        console.log('✅ USER SAVED TO CLOUD SUCCESSFULLY!');
+        
+        // Only update UI AFTER successful cloud save
+        console.log('🔄 Updating UI after successful cloud save...');
         closeAddUserModal();
         refreshAllViews();
-        showMessage(`✅ User "${userName}" added successfully and saved to cloud!`, 'success');
-        console.log(`User ${userName} added successfully`);
+        
+        showMessage(`✅ User "${userName}" added and saved to cloud!`, 'success');
+        console.log(`✅ User addition completed successfully: ${userName}`);
         
     } catch (error) {
-        // Rollback on any error
-        console.error('Error during user addition:', error);
+        console.error('❌ CRITICAL ERROR during user addition:', error);
+        
+        // ROLLBACK: Remove the user that failed to save
+        console.log('🔄 Rolling back user addition due to cloud save failure...');
         delete users[userId];
         delete tasksData[userId];
-        nextUserId--;
+        nextUserId = originalNextUserId;
         
-        showMessage('❌ Error adding user - operation cancelled', 'error');
+        // Update UI to show restored state
+        refreshAllViews();
+        
+        showMessage(`❌ Failed to save user to cloud: ${error.message}`, 'error');
+        console.log('❌ User addition rolled back due to error');
     }
 }
 
@@ -1149,14 +1184,19 @@ async function deleteUser(userId) {
         return;
     }
     
-    // Show loading state
-    showMessage('🗑️ Deleting user...', 'info');
+    console.log(`🗑️ Starting deletion of user: ${users[userId].name} (${userId})`);
     
-    // Keep backup of data in case we need to rollback
+    // Show loading state
+    showMessage('🗑️ Deleting user from cloud...', 'info');
+    
+    // Keep complete backup for rollback
     const userBackup = { ...users[userId] };
     const tasksBackup = tasksData[userId] ? [...tasksData[userId]] : [];
+    const originalCurrentPerson = currentPerson;
     
     try {
+        console.log('📝 Preparing data for deletion...');
+        
         // First, perform the deletion in memory
         delete users[userId];
         delete tasksData[userId];
@@ -1164,40 +1204,37 @@ async function deleteUser(userId) {
         // Switch to first available user if current user was deleted
         if (currentPerson === userId) {
             currentPerson = Object.keys(users)[0];
+            console.log(`👤 Switched current person to: ${currentPerson}`);
         }
         
-        // Try to save to cloud BEFORE updating UI
-        if (usingCentralData) {
-            const success = await saveData();
-            if (!success) {
-                // Rollback the deletion if cloud save failed
-                users[userId] = userBackup;
-                tasksData[userId] = tasksBackup;
-                if (currentPerson !== userId && Object.keys(users).includes(userId)) {
-                    // Don't change currentPerson back if we switched to a valid user
-                }
-                showMessage('❌ Failed to delete user from cloud - deletion cancelled', 'error');
-                return;
-            }
-        }
+        console.log('💾 Attempting to save deletion to cloud...');
         
-        // Only update UI after successful cloud save (or if not using cloud)
+        // CRITICAL: Save to cloud and wait for confirmation
+        await saveData(); // This will throw on failure
+        
+        console.log('✅ DELETION SAVED TO CLOUD SUCCESSFULLY!');
+        
+        // Only update UI AFTER successful cloud save
+        console.log('🔄 Updating UI after successful cloud save...');
         refreshAllViews();
-        renderUsersList(); // Refresh the manage users modal
         
-        showMessage('✅ User deleted successfully and saved to cloud!', 'success');
-        console.log(`User ${userBackup.name} deleted successfully`);
+        showMessage(`✅ User "${userBackup.name}" deleted permanently from cloud!`, 'success');
+        console.log(`✅ User deletion completed successfully: ${userBackup.name}`);
         
     } catch (error) {
-        // Rollback on any error
-        console.error('Error during user deletion:', error);
+        console.error('❌ CRITICAL ERROR during user deletion:', error);
+        
+        // ROLLBACK: Restore everything to original state
+        console.log('🔄 Rolling back deletion due to cloud save failure...');
         users[userId] = userBackup;
         tasksData[userId] = tasksBackup;
+        currentPerson = originalCurrentPerson;
         
+        // Update UI to show restored state
         refreshAllViews();
-        renderUsersList();
         
-        showMessage('❌ Error deleting user - deletion cancelled', 'error');
+        showMessage(`❌ Failed to delete user from cloud: ${error.message}`, 'error');
+        console.log('❌ User deletion rolled back due to error');
     }
 }
 
