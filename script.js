@@ -21,6 +21,9 @@ let sessionToken = null;
 let tokenExpiry = null;
 const TOKEN_SESSION_DURATION = 30 * 60 * 1000; // 30 minutes in milliseconds
 
+// Loading state management
+let isCloudOperationInProgress = false;
+
 // Sample data for both people
 let tasksData = {
     person1: [
@@ -302,6 +305,13 @@ async function getSessionToken() {
         return CONFIG.GITHUB_TOKEN;
     }
     
+    // Clear expired token
+    if (sessionToken && tokenExpiry && Date.now() >= tokenExpiry) {
+        console.log('Session token expired, clearing...');
+        sessionToken = null;
+        tokenExpiry = null;
+    }
+    
     // No valid token, prompt user
     console.log('No valid session token, prompting user...');
     const token = await promptForToken();
@@ -362,13 +372,26 @@ async function saveCentralDataWithToken() {
         return false;
     }
     
-    const token = await getSessionToken();
-    if (!token) {
-        showMessage('❌ GitHub token required to save to cloud', 'error');
+    // Prevent concurrent operations
+    if (isCloudOperationInProgress) {
+        console.log('Cloud operation already in progress, skipping...');
         return false;
     }
     
-    return await saveCentralData(token);
+    isCloudOperationInProgress = true;
+    
+    try {
+        const token = await getSessionToken();
+        if (!token) {
+            showMessage('❌ GitHub token required to save to cloud', 'error');
+            return false;
+        }
+        
+        const result = await saveCentralData(token);
+        return result;
+    } finally {
+        isCloudOperationInProgress = false;
+    }
 }
 
 async function saveCentralData(userToken = null) {
@@ -424,9 +447,27 @@ async function saveCentralData(userToken = null) {
         
         if (response.ok) {
             console.log('Data saved to cloud successfully');
+            
+            // Force a small delay then reload from cloud to ensure consistency
+            setTimeout(async () => {
+                try {
+                    await loadCentralData();
+                    renderPersonButtons();
+                    updateStats();
+                    renderTasks();
+                    renderKanbanBoard();
+                    renderCalendar();
+                    console.log('Reloaded data from cloud for consistency');
+                } catch (error) {
+                    console.error('Failed to reload from cloud:', error);
+                }
+            }, 1000);
+            
             return true;
         } else {
             console.error('Failed to save to cloud:', response.status, response.statusText);
+            const errorText = await response.text();
+            console.error('Error details:', errorText);
             return false;
         }
     } catch (error) {
@@ -795,14 +836,14 @@ function handleTaskSubmit(e) {
     
     // Auto-save to cloud if centralized data is enabled
     if (usingCentralData) {
-        saveCentralDataWithToken().then(success => {
+        syncToCloud().then(success => {
             if (success) {
                 showMessage('✅ Data saved to cloud successfully!', 'success');
             } else {
-                console.log('Cloud save cancelled or failed');
+                console.log('Cloud sync cancelled or failed');
             }
         }).catch(error => {
-            console.error('Cloud save error:', error);
+            console.error('Cloud sync error:', error);
             showMessage('⚠️ Could not save to cloud, data saved locally', 'warning');
         });
     }
@@ -836,14 +877,14 @@ function handleAddUser(e) {
     
     // Auto-save to cloud if centralized data is enabled
     if (usingCentralData) {
-        saveCentralDataWithToken().then(success => {
+        syncToCloud().then(success => {
             if (success) {
                 showMessage('✅ User saved to cloud successfully!', 'success');
             } else {
-                console.log('Cloud save cancelled or failed for user');
+                console.log('Cloud sync cancelled or failed for user');
             }
         }).catch(error => {
-            console.error('Cloud save error:', error);
+            console.error('Cloud sync error:', error);
             showMessage('⚠️ Could not save to cloud, data saved locally', 'warning');
         });
     }
@@ -917,11 +958,12 @@ function deleteUser(userId) {
         
         // Auto-save to cloud if centralized data is enabled
         if (usingCentralData) {
-            saveCentralDataWithToken().then(success => {
+            syncToCloud().then(success => {
                 if (success) {
                     showMessage('✅ User deletion saved to cloud!', 'success');
                 } else {
-                    console.log('Cloud save cancelled or failed for user deletion');
+                    console.log('Cloud sync cancelled or failed for user deletion');
+                    showMessage('⚠️ User deleted locally, but may not sync to cloud', 'warning');
                 }
             }).catch(error => {
                 console.error('Cloud save error:', error);
@@ -1044,7 +1086,7 @@ function importData(event) {
 async function saveToGitHub() {
     try {
         // Use centralized save function for consistency
-        const success = await saveCentralDataWithToken();
+        const success = await syncToCloud();
         if (success) {
             showMessage('✅ Data successfully saved to GitHub!', 'success');
         } else {
@@ -1085,11 +1127,29 @@ function saveData() {
     };
     localStorage.setItem('accountabilityTracker', JSON.stringify(data));
     
-    // Auto-sync to central storage if enabled
-    if (usingCentralData && CONFIG.AUTO_SAVE_TO_CENTRAL) {
-        saveCentralData().catch(err => {
-            console.error('Failed to save to central storage:', err);
-        });
+    // Don't auto-sync from saveData to avoid conflicts - let manual operations handle cloud sync
+    console.log('Data saved to localStorage');
+}
+
+// Manual cloud sync function
+async function syncToCloud() {
+    if (!usingCentralData) {
+        console.log('Central data not configured');
+        return false;
+    }
+    
+    try {
+        const success = await saveCentralDataWithToken();
+        if (success) {
+            console.log('Manual sync to cloud successful');
+            return true;
+        } else {
+            console.log('Manual sync to cloud failed or cancelled');
+            return false;
+        }
+    } catch (error) {
+        console.error('Manual sync error:', error);
+        return false;
     }
 }
 

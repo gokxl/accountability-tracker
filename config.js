@@ -12,7 +12,7 @@ const CONFIG = {
     AUTO_LOAD_CENTRAL_DATA: true,
     
     // Auto-save to central storage (requires token)
-    AUTO_SAVE_TO_CENTRAL: false,
+    AUTO_SAVE_TO_CENTRAL: true,
     
     // Sync interval in minutes (0 to disable)
     SYNC_INTERVAL_MINUTES: 5,
