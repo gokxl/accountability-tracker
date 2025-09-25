@@ -36,30 +36,38 @@ document.addEventListener('DOMContentLoaded', async function() {
             await loadData();
             showMessage('✅ Connected to cloud storage!', 'success');
             
-            // Ensure we have at least default users if cloud is empty
+            // Only initialize with defaults if this is genuinely the first time (no data at all)
             if (!users || Object.keys(users).length === 0) {
-                console.log('Cloud data is empty, initializing with default users');
-                users = CONFIG.DEFAULT_USERS;
-                nextUserId = Object.keys(users).length + 1;
-                // Initialize empty task data for each user
-                Object.keys(users).forEach(userId => {
-                    if (!tasksData[userId]) {
-                        tasksData[userId] = [];
-                    }
-                });
-                // Save the initial setup to cloud
-                await saveData();
+                console.log('⚠️ No users found in cloud - this may be first setup or all users were deleted');
+                
+                // Ask user if they want to initialize with default users
+                const shouldInitialize = confirm('No users found in cloud storage. Would you like to create default users (Alex and Jordan)?');
+                if (shouldInitialize) {
+                    console.log('User chose to initialize with default users');
+                    users = CONFIG.DEFAULT_USERS;
+                    nextUserId = Object.keys(users).length + 1;
+                    // Initialize empty task data for each user
+                    Object.keys(users).forEach(userId => {
+                        if (!tasksData[userId]) {
+                            tasksData[userId] = [];
+                        }
+                    });
+                    // Save the initial setup to cloud
+                    await saveData();
+                } else {
+                    console.log('User chose not to initialize - keeping empty state');
+                    users = {};
+                    tasksData = {};
+                    nextUserId = 1;
+                }
             }
         } catch (error) {
             console.error('Failed to load from cloud:', error);
-            showMessage('⚠️ Cloud unavailable - initializing with default data', 'warning');
-            // Initialize with defaults if cloud fails
-            users = CONFIG.DEFAULT_USERS;
-            nextUserId = Object.keys(users).length + 1;
+            showMessage('⚠️ Cloud unavailable - please check your connection', 'error');
+            // Don't auto-initialize with defaults - let user decide
+            users = {};
             tasksData = {};
-            Object.keys(users).forEach(userId => {
-                tasksData[userId] = [];
-            });
+            nextUserId = 1;
         }
     } else {
         console.log('No cloud storage configured - using defaults');
@@ -424,9 +432,7 @@ async function saveCentralData(userToken = null) {
         throw new Error('No central Gist ID configured');
     }
     
-    // Get token from session cache, config, or user input
-    let token = userToken || CONFIG.GITHUB_TOKEN;
-    
+    // Validate token exists
     if (!token) {
         console.log('🔑 No token available, prompting user...');
         token = await promptForToken();
@@ -437,14 +443,14 @@ async function saveCentralData(userToken = null) {
         console.log('✅ Token provided by user');
     }
     
-    // Validate that we have data to save
-    if (!users || Object.keys(users).length === 0) {
-        console.error('❌ No user data to save');
-        throw new Error('No user data to save');
-    }
+    // Initialize empty objects if they don't exist
+    if (!users) users = {};
+    if (!tasksData) tasksData = {};
     
+    console.log(`💾 Preparing to save data: ${Object.keys(users).length} users`);
+
     try {
-        // Create the data payload
+        // Create the data payload - allow empty users for deletions
         const data = {
             users: users,
             tasksData: tasksData,
@@ -1143,7 +1149,17 @@ function closeManageUsersModal() {
 
 function renderUsersList() {
     const container = document.getElementById('users-list');
+    if (!container) {
+        console.warn('Users list container not found');
+        return;
+    }
+    
     container.innerHTML = '';
+    
+    if (!users || Object.keys(users).length === 0) {
+        container.innerHTML = '<p>No users found</p>';
+        return;
+    }
     
     Object.values(users).forEach(user => {
         const userDiv = document.createElement('div');
@@ -1162,7 +1178,7 @@ function renderUsersList() {
             </div>
             <div class="user-actions">
                 ${Object.keys(users).length > 1 ? 
-                    `<button class="btn-delete-user" onclick="deleteUser('${user.id}')">
+                    `<button class="btn-delete-user" data-user-id="${user.id}">
                         <i class="fas fa-trash"></i> Delete
                     </button>` : 
                     '<small style="color: #94a3b8;">Cannot delete last user</small>'
@@ -1170,8 +1186,36 @@ function renderUsersList() {
             </div>
         `;
         
+        // Add proper event listener for delete button
+        const deleteButton = userDiv.querySelector('.btn-delete-user');
+        if (deleteButton) {
+            deleteButton.addEventListener('click', async function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                const userId = this.getAttribute('data-user-id');
+                console.log('🔘 Delete button clicked for user:', userId);
+                
+                // Disable button to prevent double-clicks
+                this.disabled = true;
+                this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Deleting...';
+                
+                try {
+                    await deleteUser(userId);
+                } catch (error) {
+                    console.error('Delete user error:', error);
+                    showMessage('❌ Error deleting user: ' + error.message, 'error');
+                } finally {
+                    // Re-enable button (though it might be gone if deletion succeeded)
+                    this.disabled = false;
+                    this.innerHTML = '<i class="fas fa-trash"></i> Delete';
+                }
+            });
+        }
+        
         container.appendChild(userDiv);
     });
+    
+    console.log(`📋 Rendered ${Object.keys(users).length} users in manage users modal`);
 }
 
 async function deleteUser(userId) {
@@ -1347,6 +1391,7 @@ function importData(event) {
     event.target.value = '';
 }
 
+// TEST FUNCTION - Add this for debugging cloud operations
 // GitHub Cloud Storage Functions - Pure cloud-based approach
 async function saveToGitHub() {
     try {
