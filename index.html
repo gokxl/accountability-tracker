@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Accountability Tracker</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-content">
+                <h1><i class="fas fa-target"></i> Accountability Tracker</h1>
+                <div class="person-selector">
+                    <div id="person-buttons">
+                        <button class="person-btn active" onclick="switchPerson('person1')">
+                            <i class="fas fa-user"></i> Alex's Tracker
+                        </button>
+                        <button class="person-btn" onclick="switchPerson('person2')">
+                            <i class="fas fa-user"></i> Jordan's Tracker
+                        </button>
+                    </div>
+                    <div class="user-management">
+                        <button class="btn btn-add-user" onclick="showAddUserModal()">
+                            <i class="fas fa-user-plus"></i> Add User
+                        </button>
+                        <button class="btn btn-manage-users" onclick="showManageUsersModal()">
+                            <i class="fas fa-users-cog"></i> Manage
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="view-controls">
+                <button class="view-btn active" onclick="switchView('table')">
+                    <i class="fas fa-table"></i> Table
+                </button>
+                <button class="view-btn" onclick="switchView('kanban')">
+                    <i class="fas fa-columns"></i> Board
+                </button>
+                <button class="view-btn" onclick="switchView('calendar')">
+                    <i class="fas fa-calendar"></i> Calendar
+                </button>
+            </div>
+        </header>
+
+        <div class="stats-section">
+            <div class="stat-card">
+                <div class="stat-number" id="total-tasks">0</div>
+                <div class="stat-label">Total Tasks</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="completed-tasks">0</div>
+                <div class="stat-label">Completed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="in-progress-tasks">0</div>
+                <div class="stat-label">In Progress</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="progress-percentage">0%</div>
+                <div class="stat-label">Progress</div>
+            </div>
+            <div class="stat-card" id="cloud-status-card" style="display: none;">
+                <div class="stat-number" id="cloud-status">☁️</div>
+                <div class="stat-label">Cloud Status</div>
+            </div>
+        </div>
+
+        <div class="actions-bar">
+            <div class="left-actions">
+                <button class="btn btn-primary" onclick="addTask()">
+                    <i class="fas fa-plus"></i> Add Task
+                </button>
+                <button class="btn btn-share" onclick="showShareModal()">
+                    <i class="fas fa-share-alt"></i> Share
+                </button>
+            </div>
+            <div class="filter-controls">
+                <select id="priority-filter" onchange="filterTasks()">
+                    <option value="all">All Priorities</option>
+                    <option value="high">High Priority</option>
+                    <option value="medium">Medium Priority</option>
+                    <option value="low">Low Priority</option>
+                </select>
+                <select id="status-filter" onchange="filterTasks()">
+                    <option value="all">All Statuses</option>
+                    <option value="not-started">Not Started</option>
+                    <option value="in-progress">In Progress</option>
+                    <option value="completed">Completed</option>
+                </select>
+            </div>
+        </div>
+        </div>
+
+        <!-- Table View -->
+        <div id="table-view" class="view-content active">
+            <div class="table-container">
+                <table id="tasks-table">
+                    <thead>
+                        <tr>
+                            <th>Task/Focus Area</th>
+                            <th>Priority</th>
+                            <th>Status</th>
+                            <th>Deadline</th>
+                            <th>Last Update</th>
+                            <th>Date Logged</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tasks-tbody">
+                        <!-- Tasks will be dynamically inserted here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Kanban Board View -->
+        <div id="kanban-view" class="view-content">
+            <div class="kanban-board">
+                <div class="kanban-column">
+                    <div class="kanban-header">
+                        <h3><i class="fas fa-play"></i> Not Started</h3>
+                        <span class="task-count" id="not-started-count">0</span>
+                    </div>
+                    <div class="kanban-tasks" id="not-started-tasks"></div>
+                </div>
+                <div class="kanban-column">
+                    <div class="kanban-header">
+                        <h3><i class="fas fa-spinner"></i> In Progress</h3>
+                        <span class="task-count" id="in-progress-count">0</span>
+                    </div>
+                    <div class="kanban-tasks" id="in-progress-tasks"></div>
+                </div>
+                <div class="kanban-column">
+                    <div class="kanban-header">
+                        <h3><i class="fas fa-check"></i> Completed</h3>
+                        <span class="task-count" id="completed-count">0</span>
+                    </div>
+                    <div class="kanban-tasks" id="completed-tasks"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Calendar View -->
+        <div id="calendar-view" class="view-content">
+            <div class="calendar-header">
+                <button class="nav-btn" onclick="navigateMonth(-1)"><i class="fas fa-chevron-left"></i></button>
+                <h2 id="calendar-month">September 2025</h2>
+                <button class="nav-btn" onclick="navigateMonth(1)"><i class="fas fa-chevron-right"></i></button>
+            </div>
+            <div class="calendar-grid" id="calendar-grid">
+                <!-- Calendar will be generated here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Task Modal -->
+    <div id="task-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-title">Add New Task</h2>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            <form id="task-form">
+                <div class="form-group">
+                    <label for="task-name">Task/Focus Area *</label>
+                    <input type="text" id="task-name" required placeholder="e.g., LeetCode Dynamic Programming">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="task-priority">Priority *</label>
+                        <select id="task-priority" required>
+                            <option value="high">High</option>
+                            <option value="medium" selected>Medium</option>
+                            <option value="low">Low</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="task-status">Status *</label>
+                        <select id="task-status" required>
+                            <option value="not-started" selected>Not Started</option>
+                            <option value="in-progress">In Progress</option>
+                            <option value="completed">Completed</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="task-deadline">Deadline</label>
+                    <input type="date" id="task-deadline">
+                </div>
+                <div class="form-group">
+                    <label for="task-update">Today's Update/Action *</label>
+                    <textarea id="task-update" required placeholder="What did you accomplish today? e.g., 'Solved 3 DP problems: House Robber, Coin Change, and Longest Common Subsequence'"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Task</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Add User Modal -->
+    <div id="add-user-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Add New User</h2>
+                <button class="close-btn" onclick="closeAddUserModal()">&times;</button>
+            </div>
+            <form id="add-user-form">
+                <div class="form-group">
+                    <label for="user-name">User Name *</label>
+                    <input type="text" id="user-name" required placeholder="Enter user name">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeAddUserModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add User</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Manage Users Modal -->
+    <div id="manage-users-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Manage Users</h2>
+                <button class="close-btn" onclick="closeManageUsersModal()">&times;</button>
+            </div>
+            <div class="users-list" id="users-list">
+                <!-- Users will be listed here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Share Modal -->
+    <div id="share-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2><i class="fas fa-share-alt"></i> Share Tracker</h2>
+                <button class="close-btn" onclick="closeShareModal()">&times;</button>
+            </div>
+            <div class="share-options">
+                <div class="share-method">
+                    <h3><i class="fas fa-download"></i> Export Data</h3>
+                    <p>Download your data to share via any method</p>
+                    <button class="btn btn-primary" onclick="exportData()">
+                        <i class="fas fa-download"></i> Download JSON
+                    </button>
+                </div>
+                <div class="share-method">
+                    <h3><i class="fas fa-cloud"></i> Google Drive Share</h3>
+                    <p>Upload the tracker folder to Google Drive and share the link</p>
+                    <div class="instructions">
+                        <ol>
+                            <li>Upload entire "Personal Tracker" folder to Google Drive</li>
+                            <li>Right-click folder → Share → Anyone with link can view</li>
+                            <li>Send link to collaborators</li>
+                        </ol>
+                    </div>
+                </div>
+                <div class="share-method">
+                    <h3><i class="fas fa-cloud"></i> GitHub Cloud Storage</h3>
+                    <p>Save your data permanently in the cloud for free</p>
+                    <div id="github-auth-section">
+                        <input type="text" id="github-token" placeholder="GitHub Personal Access Token (optional)" 
+                               style="width: 100%; padding: 8px; margin: 8px 0; border: 1px solid #e2e8f0; border-radius: 6px;">
+                        <button class="btn btn-primary" onclick="saveToGitHub()">
+                            <i class="fas fa-cloud-upload-alt"></i> Save to Cloud
+                        </button>
+                        <button class="btn btn-secondary" onclick="loadFromGitHub()">
+                            <i class="fas fa-cloud-download-alt"></i> Load from Cloud
+                        </button>
+                        <div id="gist-url-display" style="margin-top: 8px; display: none;">
+                            <label>Your Cloud Storage URL:</label>
+                            <input type="text" id="gist-url" readonly style="width: 100%; padding: 6px; font-size: 12px;">
+                            <button class="btn btn-secondary" onclick="copyGistUrl()" style="margin-top: 4px;">
+                                <i class="fas fa-copy"></i> Copy URL
+                            </button>
+                        </div>
+                    </div>
+                    <div class="instructions">
+                        <p><strong>How it works:</strong></p>
+                        <ol>
+                            <li>Data is saved to GitHub Gists (free, permanent storage)</li>
+                            <li>Works without token for public storage</li>
+                            <li>Add token for private storage and better reliability</li>
+                            <li>Share the Gist URL with collaborators</li>
+                        </ol>
+                    </div>
+                </div>
+                <div class="share-method">
+                    <h3><i class="fas fa-table"></i> Google Sheets Collaboration</h3>
+                    <p>Use Google Sheets for real-time collaboration</p>
+                    <button class="btn btn-primary" onclick="exportCSV()">
+                        <i class="fas fa-file-csv"></i> Export CSV for Sheets
+                    </button>
+                </div>
+                <div class="share-method">
+                    <h3><i class="fas fa-upload"></i> Import Data</h3>
+                    <p>Import data from another user</p>
+                    <input type="file" id="import-file" accept=".json" style="display: none;" onchange="importData(event)">
+                    <button class="btn btn-secondary" onclick="document.getElementById('import-file').click()">
+                        <i class="fas fa-upload"></i> Import JSON
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
