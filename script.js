@@ -577,6 +577,29 @@ function refreshAllViews() {
     try {
         console.log('Refreshing all views...');
         
+        // Check if we have valid data to render
+        if (!users || Object.keys(users).length === 0) {
+            console.log('No users available - showing empty state');
+            // Clear all views
+            const tbody = document.getElementById('tasks-tbody');
+            if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 20px;">No users available. Please add a user first.</td></tr>';
+            
+            // Update stats to show zeros
+            const totalElement = document.getElementById('total-tasks');
+            const completedElement = document.getElementById('completed-tasks');
+            const inProgressElement = document.getElementById('in-progress-tasks');
+            const percentageElement = document.getElementById('progress-percentage');
+            
+            if (totalElement) totalElement.textContent = '0';
+            if (completedElement) completedElement.textContent = '0';
+            if (inProgressElement) inProgressElement.textContent = '0';
+            if (percentageElement) percentageElement.textContent = '0%';
+            
+            renderPersonButtons(); // This will show empty state
+            updateCloudStatus();
+            return;
+        }
+        
         renderPersonButtons();
         updateStats();
         renderTasks();
@@ -695,10 +718,16 @@ function updateStats() {
     
     console.log(`Stats for ${currentPerson}:`, { total, completed, inProgress, percentage });
     
-    document.getElementById('total-tasks').textContent = total;
-    document.getElementById('completed-tasks').textContent = completed;
-    document.getElementById('in-progress-tasks').textContent = inProgress;
-    document.getElementById('progress-percentage').textContent = percentage + '%';
+    // Update stats with safety checks
+    const totalElement = document.getElementById('total-tasks');
+    const completedElement = document.getElementById('completed-tasks');
+    const inProgressElement = document.getElementById('in-progress-tasks');
+    const percentageElement = document.getElementById('progress-percentage');
+    
+    if (totalElement) totalElement.textContent = total;
+    if (completedElement) completedElement.textContent = completed;
+    if (inProgressElement) inProgressElement.textContent = inProgress;
+    if (percentageElement) percentageElement.textContent = percentage + '%';
     
     // Update cloud status and token status
     updateCloudStatus();
@@ -708,6 +737,12 @@ function updateStats() {
 function updateCloudStatus() {
     const statusCard = document.getElementById('cloud-status-card');
     const statusIndicator = document.getElementById('cloud-status');
+    
+    // Safety checks - elements might not exist yet
+    if (!statusCard || !statusIndicator) {
+        console.warn('Cloud status elements not found in DOM');
+        return;
+    }
     
     if (currentGistId) {
         statusCard.style.display = 'block';
