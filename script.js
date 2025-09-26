@@ -79,10 +79,13 @@ document.addEventListener('DOMContentLoaded', async function() {
         });
     }
     
-    // Set currentPerson to first available user
-    currentPerson = Object.keys(users)[0] || 'person1';
+    // Set currentPerson to first available user or null if no users
+    const availableUsers = Object.keys(users);
+    currentPerson = availableUsers.length > 0 ? availableUsers[0] : null;
     
-    currentTaskId = Math.max(...Object.values(tasksData).flat().map(t => t.id)) || 0;
+    // Only calculate currentTaskId if we have task data
+    const allTasks = Object.values(tasksData).flat();
+    currentTaskId = allTasks.length > 0 ? Math.max(...allTasks.map(t => t.id)) : 0;
     refreshAllViews();
     updateTokenStatus();
     
@@ -367,12 +370,12 @@ async function saveCentralDataWithToken() {
     
     // Prevent concurrent operations (except token prompts)
     if (isCloudOperationInProgress && operationType !== 'token-prompt') {
-        console.log('⏳ Another cloud operation is in progress, waiting...');
-        // Wait and retry once
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log('⏳ Another cloud operation is in progress, waiting briefly...');
+        // Shorter wait for better UX
+        await new Promise(resolve => setTimeout(resolve, 500));
         if (isCloudOperationInProgress) {
             console.log('❌ Cloud operation still in progress, aborting');
-            throw new Error('Another cloud operation is in progress');
+            throw new Error('Another cloud operation is in progress - please wait a moment');
         }
     }
     
@@ -926,6 +929,11 @@ function addTask() {
 
 // Edit existing task
 function editTask(taskId) {
+    if (!currentPerson || !tasksData[currentPerson]) {
+        showMessage('❌ No user selected or no task data available', 'error');
+        return;
+    }
+    
     const task = tasksData[currentPerson].find(t => t.id === taskId);
     if (!task) return;
     
@@ -943,6 +951,11 @@ function editTask(taskId) {
 
 // Delete task with robust cloud sync
 async function deleteTask(taskId) {
+    if (!currentPerson || !tasksData[currentPerson]) {
+        showMessage('❌ No user selected or no task data available', 'error');
+        return;
+    }
+    
     if (!confirm('Are you sure you want to delete this task?')) {
         return;
     }
@@ -963,33 +976,34 @@ async function deleteTask(taskId) {
         // Remove task from data
         tasksData[currentPerson] = tasksData[currentPerson].filter(task => task.id !== taskId);
         
-        // Try to save to cloud BEFORE updating UI
+        // Update UI immediately for better UX
+        refreshAllViews();
+        showMessage('🔄 Saving task deletion to cloud...', 'info');
+        
+        // Save to cloud
         if (usingCentralData) {
-            const success = await saveData();
-            if (!success) {
-                // Rollback the deletion if cloud save failed
-                tasksData[currentPerson].splice(taskIndex, 0, taskBackup);
-                showMessage('❌ Failed to delete task from cloud - deletion cancelled', 'error');
-                return;
-            }
+            await saveData(); // This throws on failure
         }
         
-        // Only update UI after successful cloud save (or if not using cloud)
-        refreshAllViews();
-        showMessage('✅ Task deleted successfully and saved to cloud!', 'success');
+        showMessage('✅ Task deleted successfully!', 'success');
         
     } catch (error) {
         console.error('Error during task deletion:', error);
         // Rollback on error
         tasksData[currentPerson].splice(taskIndex, 0, taskBackup);
         refreshAllViews();
-        showMessage('❌ Error deleting task - deletion cancelled', 'error');
+        showMessage('❌ Failed to delete task from cloud - deletion cancelled', 'error');
     }
 }
 
 // Handle form submission - robust cloud operations
 async function handleTaskSubmit(e) {
     e.preventDefault();
+    
+    if (!currentPerson) {
+        showMessage('❌ No user selected. Please add a user first.', 'error');
+        return;
+    }
     
     const taskData = {
         name: document.getElementById('task-name').value,
@@ -1023,32 +1037,18 @@ async function handleTaskSubmit(e) {
             }
         }
         
-        // Try to save to cloud BEFORE closing modal and updating UI
-        if (usingCentralData) {
-            const success = await saveData();
-            if (!success) {
-                // Rollback the changes
-                if (mode === 'add') {
-                    tasksData[currentPerson].pop();
-                    currentTaskId--;
-                } else if (mode === 'edit' && backupData) {
-                    const taskId = parseInt(e.target.dataset.taskId);
-                    const taskIndex = tasksData[currentPerson].findIndex(t => t.id === taskId);
-                    if (taskIndex !== -1) {
-                        tasksData[currentPerson][taskIndex] = backupData;
-                    }
-                }
-                showMessage('❌ Failed to save task to cloud - changes cancelled', 'error');
-                return;
-            }
-        }
-        
-        // Only close modal and update UI after successful save
+        // Update UI immediately for better UX
         closeModal();
         refreshAllViews();
+        showMessage('🔄 Saving task to cloud...', 'info');
+        
+        // Save to cloud after UI update
+        if (usingCentralData) {
+            await saveData(); // This throws on failure
+        }
         
         const action = mode === 'add' ? 'added' : 'updated';
-        showMessage(`✅ Task ${action} successfully and saved to cloud!`, 'success');
+        showMessage(`✅ Task ${action} successfully!`, 'success');
         
     } catch (error) {
         console.error('Error during task submit:', error);
@@ -1106,19 +1106,18 @@ async function handleAddUser(e) {
         tasksData[userId] = [];
         nextUserId++;
         
-        console.log('💾 Attempting to save new user to cloud...');
+        // Update UI immediately for better UX
+        closeAddUserModal();
+        refreshAllViews();
+        showMessage(`� Adding "${userName}" to cloud...`, 'info');
         
-        // CRITICAL: Save to cloud and wait for confirmation
+        console.log('💾 Saving new user to cloud...');
+        
+        // Save to cloud after UI update
         await saveData(); // This will throw on failure
         
         console.log('✅ USER SAVED TO CLOUD SUCCESSFULLY!');
-        
-        // Only update UI AFTER successful cloud save
-        console.log('🔄 Updating UI after successful cloud save...');
-        closeAddUserModal();
-        refreshAllViews();
-        
-        showMessage(`✅ User "${userName}" added and saved to cloud!`, 'success');
+        showMessage(`✅ User "${userName}" added successfully!`, 'success');
         console.log(`✅ User addition completed successfully: ${userName}`);
         
     } catch (error) {
@@ -1241,28 +1240,36 @@ async function deleteUser(userId) {
     try {
         console.log('📝 Preparing data for deletion...');
         
+        // Update UI immediately for better user experience
+        console.log('🔄 Updating UI optimistically...');
+        
         // First, perform the deletion in memory
         delete users[userId];
         delete tasksData[userId];
         
         // Switch to first available user if current user was deleted
         if (currentPerson === userId) {
-            currentPerson = Object.keys(users)[0];
-            console.log(`👤 Switched current person to: ${currentPerson}`);
+            const remainingUsers = Object.keys(users);
+            if (remainingUsers.length > 0) {
+                currentPerson = remainingUsers[0];
+                console.log(`👤 Switched current person to: ${currentPerson}`);
+            } else {
+                currentPerson = null;
+                console.log(`👤 No users remaining after deletion`);
+            }
         }
         
-        console.log('💾 Attempting to save deletion to cloud...');
+        // Update UI immediately
+        refreshAllViews();
+        showMessage(`🔄 Deleting "${userBackup.name}" from cloud...`, 'info');
         
-        // CRITICAL: Save to cloud and wait for confirmation
+        console.log('💾 Saving deletion to cloud in background...');
+        
+        // Save to cloud - this happens after UI update for better UX
         await saveData(); // This will throw on failure
         
-        console.log('✅ DELETION SAVED TO CLOUD SUCCESSFULLY!');
-        
-        // Only update UI AFTER successful cloud save
-        console.log('🔄 Updating UI after successful cloud save...');
-        refreshAllViews();
-        
-        showMessage(`✅ User "${userBackup.name}" deleted permanently from cloud!`, 'success');
+        console.log('✅ DELETION CONFIRMED IN CLOUD!');
+        showMessage(`✅ User "${userBackup.name}" deleted permanently!`, 'success');
         console.log(`✅ User deletion completed successfully: ${userBackup.name}`);
         
     } catch (error) {
