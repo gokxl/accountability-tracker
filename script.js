@@ -812,14 +812,32 @@ function renderKanbanBoard() {
         'completed': 0
     };
     
-    // Clear existing tasks
+    // Clear existing tasks with more thorough element finding
     ['not-started', 'in-progress', 'completed'].forEach(status => {
         const elementId = status === 'in-progress' ? 'kanban-in-progress-tasks' : 
                          status === 'completed' ? 'kanban-completed-tasks' : 
                          `${status}-tasks`;
-        const element = document.getElementById(elementId);
+        
+        // Try multiple ways to find the element
+        let element = document.getElementById(elementId);
+        if (!element) {
+            console.log(`⚠️ ${elementId} not found with getElementById, searching with querySelector...`);
+            element = document.querySelector(`#${elementId}`);
+        }
+        if (!element) {
+            console.log(`⚠️ ${elementId} not found with querySelector either, trying to find in kanban view...`);
+            const kanbanView = document.getElementById('kanban-view');
+            if (kanbanView) {
+                element = kanbanView.querySelector(`#${elementId}`);
+            }
+        }
+        
         console.log(`🔍 Looking for ${elementId}:`, element ? 'Found' : 'NOT FOUND');
-        if (element) element.innerHTML = '';
+        if (element) {
+            element.innerHTML = '';
+        } else {
+            console.error(`❌ Could not find kanban container: ${elementId}`);
+        }
     });
     
     tasks.forEach(task => {
@@ -847,12 +865,24 @@ function renderKanbanBoard() {
                          task.status === 'completed' ? 'kanban-completed-tasks' : 
                          `${task.status}-tasks`;
         console.log(`🎯 Trying to append to: ${elementId}`);
-        const container = document.getElementById(elementId);
+        
+        // Try multiple ways to find the container
+        let container = document.getElementById(elementId);
+        if (!container) {
+            container = document.querySelector(`#${elementId}`);
+        }
+        if (!container) {
+            const kanbanView = document.getElementById('kanban-view');
+            if (kanbanView) {
+                container = kanbanView.querySelector(`#${elementId}`);
+            }
+        }
+        
         if (container) {
             container.appendChild(taskElement);
             console.log(`✅ Successfully added task to ${elementId}`);
         } else {
-            console.error(`❌ Container ${elementId} not found!`);
+            console.error(`❌ Container ${elementId} not found! Task: ${task.name}`);
         }
     });
     
