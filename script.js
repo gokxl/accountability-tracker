@@ -804,45 +804,23 @@ function renderTasks() {
 // Render Kanban board
 function renderKanbanBoard() {
     const tasks = getFilteredTasks();
-    console.log('🔲 Rendering Kanban Board with tasks:', tasks);
-    
     const statusCounts = {
         'not-started': 0,
         'in-progress': 0,
         'completed': 0
     };
     
-    // Clear existing tasks with more thorough element finding
+    // Clear existing tasks - using unique IDs to avoid conflicts with stats
     ['not-started', 'in-progress', 'completed'].forEach(status => {
-        const elementId = status === 'in-progress' ? 'kanban-in-progress-tasks' : 
-                         status === 'completed' ? 'kanban-completed-tasks' : 
+        const elementId = status === 'in-progress' ? 'in-progress-tasks-kanban' :
+                         status === 'completed' ? 'completed-tasks-kanban' :
                          `${status}-tasks`;
-        
-        // Try multiple ways to find the element
-        let element = document.getElementById(elementId);
-        if (!element) {
-            console.log(`⚠️ ${elementId} not found with getElementById, searching with querySelector...`);
-            element = document.querySelector(`#${elementId}`);
-        }
-        if (!element) {
-            console.log(`⚠️ ${elementId} not found with querySelector either, trying to find in kanban view...`);
-            const kanbanView = document.getElementById('kanban-view');
-            if (kanbanView) {
-                element = kanbanView.querySelector(`#${elementId}`);
-            }
-        }
-        
-        console.log(`🔍 Looking for ${elementId}:`, element ? 'Found' : 'NOT FOUND');
-        if (element) {
-            element.innerHTML = '';
-        } else {
-            console.error(`❌ Could not find kanban container: ${elementId}`);
-        }
+        const element = document.getElementById(elementId);
+        if (element) element.innerHTML = '';
     });
     
     tasks.forEach(task => {
         statusCounts[task.status]++;
-        console.log(`📝 Processing task "${task.name}" with status "${task.status}"`);
         
         const taskElement = document.createElement('div');
         taskElement.className = 'kanban-task';
@@ -861,28 +839,14 @@ function renderKanbanBoard() {
         
         taskElement.addEventListener('click', () => editTask(task.id));
         
-        const elementId = task.status === 'in-progress' ? 'kanban-in-progress-tasks' : 
-                         task.status === 'completed' ? 'kanban-completed-tasks' : 
+        // Use unique IDs for kanban to avoid conflicts with stats
+        const elementId = task.status === 'in-progress' ? 'in-progress-tasks-kanban' :
+                         task.status === 'completed' ? 'completed-tasks-kanban' :
                          `${task.status}-tasks`;
-        console.log(`🎯 Trying to append to: ${elementId}`);
         
-        // Try multiple ways to find the container
-        let container = document.getElementById(elementId);
-        if (!container) {
-            container = document.querySelector(`#${elementId}`);
-        }
-        if (!container) {
-            const kanbanView = document.getElementById('kanban-view');
-            if (kanbanView) {
-                container = kanbanView.querySelector(`#${elementId}`);
-            }
-        }
-        
+        const container = document.getElementById(elementId);
         if (container) {
             container.appendChild(taskElement);
-            console.log(`✅ Successfully added task to ${elementId}`);
-        } else {
-            console.error(`❌ Container ${elementId} not found! Task: ${task.name}`);
         }
     });
     
