@@ -435,7 +435,9 @@ async function saveCentralData(userToken = null) {
         throw new Error('No central Gist ID configured');
     }
     
-    // Validate token exists
+    // Get token from parameter, config, or prompt user
+    let token = userToken || CONFIG.GITHUB_TOKEN;
+    
     if (!token) {
         console.log('🔑 No token available, prompting user...');
         token = await promptForToken();
@@ -738,10 +740,9 @@ function updateCloudStatus() {
     const statusCard = document.getElementById('cloud-status-card');
     const statusIndicator = document.getElementById('cloud-status');
     
-    // Safety checks - elements might not exist yet
+    // Safety checks - just skip if elements not found
     if (!statusCard || !statusIndicator) {
-        console.warn('Cloud status elements not found in DOM');
-        return;
+        return; // Silently skip - not critical
     }
     
     if (currentGistId) {
