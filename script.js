@@ -804,6 +804,8 @@ function renderTasks() {
 // Render Kanban board
 function renderKanbanBoard() {
     const tasks = getFilteredTasks();
+    console.log('🔲 Rendering Kanban Board with tasks:', tasks);
+    
     const statusCounts = {
         'not-started': 0,
         'in-progress': 0,
@@ -816,11 +818,13 @@ function renderKanbanBoard() {
                          status === 'completed' ? 'kanban-completed-tasks' : 
                          `${status}-tasks`;
         const element = document.getElementById(elementId);
+        console.log(`🔍 Looking for ${elementId}:`, element ? 'Found' : 'NOT FOUND');
         if (element) element.innerHTML = '';
     });
     
     tasks.forEach(task => {
         statusCounts[task.status]++;
+        console.log(`📝 Processing task "${task.name}" with status "${task.status}"`);
         
         const taskElement = document.createElement('div');
         taskElement.className = 'kanban-task';
@@ -842,8 +846,14 @@ function renderKanbanBoard() {
         const elementId = task.status === 'in-progress' ? 'kanban-in-progress-tasks' : 
                          task.status === 'completed' ? 'kanban-completed-tasks' : 
                          `${task.status}-tasks`;
+        console.log(`🎯 Trying to append to: ${elementId}`);
         const container = document.getElementById(elementId);
-        if (container) container.appendChild(taskElement);
+        if (container) {
+            container.appendChild(taskElement);
+            console.log(`✅ Successfully added task to ${elementId}`);
+        } else {
+            console.error(`❌ Container ${elementId} not found!`);
+        }
     });
     
     // Update counts
