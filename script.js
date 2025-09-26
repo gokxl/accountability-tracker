@@ -811,7 +811,11 @@ function renderKanbanBoard() {
     
     // Clear existing tasks
     ['not-started', 'in-progress', 'completed'].forEach(status => {
-        document.getElementById(`${status}-tasks`).innerHTML = '';
+        const elementId = status === 'in-progress' ? 'kanban-in-progress-tasks' : 
+                         status === 'completed' ? 'kanban-completed-tasks' : 
+                         `${status}-tasks`;
+        const element = document.getElementById(elementId);
+        if (element) element.innerHTML = '';
     });
     
     tasks.forEach(task => {
@@ -833,7 +837,12 @@ function renderKanbanBoard() {
         `;
         
         taskElement.addEventListener('click', () => editTask(task.id));
-        document.getElementById(`${task.status}-tasks`).appendChild(taskElement);
+        
+        const elementId = task.status === 'in-progress' ? 'kanban-in-progress-tasks' : 
+                         task.status === 'completed' ? 'kanban-completed-tasks' : 
+                         `${task.status}-tasks`;
+        const container = document.getElementById(elementId);
+        if (container) container.appendChild(taskElement);
     });
     
     // Update counts
