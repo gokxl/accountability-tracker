@@ -9,7 +9,7 @@ github.com credential (gist scope required).
   python tools/gym_data.py backups                   daily snapshots (data-backups branch)
   python tools/gym_data.py restore --backup 2026-11-05 [--member ID ...] [--apply]
   python tools/gym_data.py restore --revision SHA [--member ID ...] [--apply]
-  python tools/gym_data.py remove-days ID --from 2026-11-03 --to 2026-11-04 [--apply]
+  python tools/gym_data.py remove-days ID --from 2026-11-03 --to 2026-11-04 [--steps] [--apply]
   python tools/gym_data.py delete-member ID [--apply]
 """
 import argparse
@@ -67,7 +67,8 @@ def current():
 
 def summary(m):
     days = sorted(m.get('days', {}))
-    return f"{m['id']:<28} {m.get('name', '?'):<12} {len(days):>4} days  last={days[-1] if days else '-'}"
+    steps = m.get('steps', {})
+    return f"{m['id']:<28} {m.get('name', '?'):<12} {len(days):>4} days  last={days[-1] if days else '-'}  steps={sum(steps.values()):,} over {len(steps)} days"
 
 
 def write(files, apply):
@@ -93,9 +94,12 @@ def diff_line(name, old, new):
         return f'  DELETE {name} ({len(old.get("days", {}))} days)'
     od, nd = set((old or {}).get('days', {})), set(new.get('days', {}))
     added, removed = sorted(nd - od), sorted(od - nd)
+    os_, ns = (old or {}).get('steps', {}), new.get('steps', {})
+    step_changes = sorted(k for k in set(os_) | set(ns) if os_.get(k) != ns.get(k))
     label = 'CREATE' if old is None else 'UPDATE'
     return f'  {label} {name}: {len(od)} -> {len(nd)} days' + \
-        (f'\n    + {", ".join(added)}' if added else '') + (f'\n    - {", ".join(removed)}' if removed else '')
+        (f'\n    + {", ".join(added)}' if added else '') + (f'\n    - {", ".join(removed)}' if removed else '') + \
+        (f'\n    steps changed on: {", ".join(step_changes)}' if step_changes else '')
 
 
 def cmd_show(_):
@@ -159,6 +163,8 @@ def cmd_remove_days(a):
         sys.exit(f'No member {a.member}. Use "show" to list member IDs.')
     m = json.loads(json.dumps(cur[name]))
     m['days'] = {k: v for k, v in m['days'].items() if not (a.date_from <= k <= a.date_to)}
+    if a.steps:
+        m['steps'] = {k: v for k, v in m.get('steps', {}).items() if not (a.date_from <= k <= a.date_to)}
     print('Planned changes:')
     print(diff_line(name, cur[name], m))
     write({name: m}, a.apply)
@@ -194,6 +200,7 @@ def main():
     r.add_argument('member')
     r.add_argument('--from', dest='date_from', required=True, metavar='YYYY-MM-DD')
     r.add_argument('--to', dest='date_to', required=True, metavar='YYYY-MM-DD')
+    r.add_argument('--steps', action='store_true', help='also remove step entries in that range')
     r.add_argument('--apply', action='store_true')
     r.set_defaults(fn=cmd_remove_days)
     r = sub.add_parser('delete-member')

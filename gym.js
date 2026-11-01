@@ -1,6 +1,6 @@
 'use strict';
 (function () {
-    const APP_VERSION = '3.0.3';
+    const APP_VERSION = '3.1.0';
     // config.js uses a top-level const, which is not exposed as window.CONFIG.
     const CFG = typeof CONFIG !== 'undefined' ? CONFIG : {};
     const qs = new URLSearchParams(location.search);
@@ -22,6 +22,9 @@
     const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     const ID_RE = /^[a-z0-9-]{3,40}$/;
     const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    const MAX_STEPS = 200000;
+    const MIN_DATE = '2020-01-01';
+    const MAX_PHOTO_BYTES = 40 * 1024 * 1024;
     const COLOR_RE = /^#[0-9a-f]{6}$/i;
     const FILE_RE = /^gym-[a-z0-9-]{3,40}\.json$/;
 
@@ -43,6 +46,8 @@
     const pct = x => `${Math.round(x * 100)}%`;
     const fmtTime = iso => new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
     const fmtShort = k => parseKey(k).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    const fmtLong = k => parseKey(k).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    const fmtN = n => Number(n || 0).toLocaleString();
     const wLabel = id => (WORKOUTS.find(w => w[0] === id) || [0, id])[1];
     const cleanName = s => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 20);
     const slug = s => s.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 20) || 'member';
@@ -78,6 +83,13 @@
                 days[k] = e;
             }
         }
+        const steps = {};
+        if (raw.steps && typeof raw.steps === 'object') {
+            for (const [k, v] of Object.entries(raw.steps)) {
+                const n = Number(v);
+                if (DATE_RE.test(k) && Number.isInteger(n) && n > 0 && n <= MAX_STEPS) steps[k] = n;
+            }
+        }
         return {
             id: raw.id,
             name: cleanName(raw.name) || 'Member',
@@ -88,7 +100,8 @@
             pinSalt: typeof raw.pinSalt === 'string' ? raw.pinSalt : '',
             createdAt: typeof raw.createdAt === 'string' && !isNaN(Date.parse(raw.createdAt)) ? raw.createdAt : new Date().toISOString(),
             updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : '',
-            days
+            days,
+            steps
         };
     }
 
@@ -112,7 +125,11 @@
         pending: !!ls.get(K.pending, false),
         rev: 0,
         sheetDay: null,
-        installEvt: null
+        sheetKind: null,
+        installEvt: null,
+        photos: [],
+        photoBusy: false,
+        photoError: null
     };
 
     const me = () => state.members[state.meId];
@@ -383,7 +400,21 @@
         const firstDay = keys.length ? parseKey(keys[0]) : null;
         const weeksActive = firstDay ? Math.max(1, Math.ceil((dayDiff(firstDay, t) + 1) / 7)) : 0;
 
+        const steps = m.steps || {}, wkKey = keyOf(wkStart), mKey = tk.slice(0, 7);
+        let stepsTotal = 0, stepsWeek = 0, stepsMonth = 0, maxSteps = 0, stepDays = 0;
+        for (const [k, n] of Object.entries(steps)) {
+            if (k > tk) continue;
+            stepsTotal += n;
+            stepDays++;
+            if (n > maxSteps) maxSteps = n;
+            if (k >= wkKey) stepsWeek += n;
+            if (k.startsWith(mKey)) stepsMonth += n;
+        }
+
         return {
+            stepsTotal, stepsWeek, stepsMonth, maxSteps, stepDays,
+            stepsToday: steps[tk] || 0,
+            stepsAvg: stepDays ? Math.round(stepsTotal / stepDays) : 0,
             total: keys.length, streak, longest: longestRun(keys), week, weekStreak, longestWeek, month, pace,
             dow, months, weeks, weekend, early, comeback,
             maxWeek: Math.max(0, ...Object.values(weeks)),
@@ -442,7 +473,10 @@
         { id: 'weekend', icon: '🌅', name: 'Weekend Warrior', desc: '10 weekend sessions', goal: 10, val: s => s.weekend },
         { id: 'early', icon: '🐓', name: 'Early Bird', desc: 'Check in before 8 AM 5 times', goal: 5, val: s => s.early },
         { id: 'comeback', icon: '🔄', name: 'Comeback Kid', desc: 'Return after a 7+ day break', goal: 1, val: s => (s.comeback ? 1 : 0) },
-        { id: 'mvp', icon: '👑', name: 'Monthly MVP', desc: 'Win a month against your buddy', goal: 1, val: s => s.monthsWon || 0 }
+        { id: 'mvp', icon: '👑', name: 'Monthly MVP', desc: 'Win a month against your buddy', goal: 1, val: s => s.monthsWon || 0 },
+        { id: 'steps10k', icon: '👟', name: '10K Day', desc: 'Log 10,000+ steps in a day', goal: 10000, val: s => s.maxSteps },
+        { id: 'steps100k', icon: '🥾', name: 'Trailblazer', desc: '100,000 total steps', goal: 100000, val: s => s.stepsTotal },
+        { id: 'steps1m', icon: '🌍', name: 'Step Millionaire', desc: '1,000,000 total steps', goal: 1000000, val: s => s.stepsTotal }
     ];
     const earnedSet = m => { const s = fullStats(m); return new Set(BADGES.filter(x => x.val(s) >= x.goal).map(x => x.id)); };
 
@@ -647,6 +681,7 @@
         state.tab = 'today';
         render();
         window.scrollTo(0, 0);
+        loadPhotos().then(() => { if (state.meId === id) render(); });
     }
 
     function nameTaken(name, exceptId) {
@@ -700,10 +735,46 @@
                 ${tile('🏆', s.longest, 'best streak')}
             </section>
             ${buddyCard(m, s, b)}
+            ${stepsCard(m, s, b)}
             ${weekCard([m, b].filter(Boolean))}
             ${monthCard(m, b)}
+            ${photosCard()}
             ${nextBadgeCard(m)}
             ${installCard()}`;
+    }
+
+    function stepsCard(m, s, b) {
+        let foot = '';
+        if (b) {
+            const bs = stats(b), diff = s.stepsWeek - bs.stepsWeek;
+            const line = !s.stepsWeek && !bs.stepsWeek ? 'No steps logged by either of you this week yet'
+                : diff === 0 ? 'Level on steps this week'
+                    : diff > 0 ? `You're ${fmtN(diff)} steps ahead this week` : `${b.name} is ${fmtN(-diff)} steps ahead this week`;
+            foot = `<div class="buddy-foot">${esc(b.name)}: ${fmtN(bs.stepsToday)} today · ${fmtN(bs.stepsWeek)} this week<br>${esc(line)}</div>`;
+        }
+        return `<section class="card steps-card">
+                <div class="card-head"><h3>👟 Steps</h3><button class="btn btn-sm btn-ghost" data-action="log-steps" data-key="${todayKey()}">${s.stepsToday ? 'Edit today' : 'Log steps'}</button></div>
+                <div class="steps-row">
+                    <div><span class="steps-big">${fmtN(s.stepsToday)}</span><small>today</small></div>
+                    <div><b>${fmtN(s.stepsWeek)}</b><small>this week</small></div>
+                    <div><b>${fmtN(s.stepsTotal)}</b><small>all time</small></div>
+                </div>
+                ${foot}
+            </section>`;
+    }
+
+    function photosCard() {
+        const ps = state.photos;
+        if (state.photoError) {
+            return `<section class="card"><h3>📸 Progress photos</h3><p class="muted">${esc(state.photoError)}</p></section>`;
+        }
+        const thumbs = ps.slice(0, 3).map(p => `<button class="ph" data-action="photo-view" data-id="${esc(p.id)}"><img src="${p.url}" alt="Progress photo ${p.date}"><span>${fmtShort(p.date)}</span></button>`).join('');
+        return `<section class="card photos-card">
+                <div class="card-head"><h3>📸 Progress photos</h3>${ps.length ? `<button class="link-btn" data-action="photos">See all ${ps.length} ›</button>` : ''}</div>
+                ${ps.length ? '' : '<p class="muted small">Snap a photo now and then. In a few weeks you can compare and see how far you\'ve come.</p>'}
+                <div class="ph-strip">${thumbs}<label class="ph ph-add" for="photo-input" role="button" tabindex="0"><span class="ph-plus">＋</span><span>Add photo</span></label></div>
+                <p class="fine left">🔒 Photos stay private on this phone. They are not uploaded.</p>
+            </section>`;
     }
 
     function buddyCard(m, s, b) {
@@ -758,7 +829,7 @@
         if (!next) return '';
         return `<button class="card next-badge" data-action="tab" data-tab="trophies">
                 <span class="nb-ic">${next.x.icon}</span>
-                <span class="grow"><small>Next badge</small><strong>${next.x.name}</strong>${bar('var(--me)', next.r)}<small>${next.x.val(s)}/${next.x.goal} · ${next.x.desc}</small></span>
+                <span class="grow"><small>Next badge</small><strong>${next.x.name}</strong>${bar('var(--me)', next.r)}<small>${fmtN(next.x.val(s))}/${fmtN(next.x.goal)} · ${next.x.desc}</small></span>
                 <span class="chev">›</span>
             </button>`;
     }
@@ -807,13 +878,16 @@
         const m = me(), b = buddy(), e = m.days[k];
         const row = p => {
             const x = p.days[k];
-            const detail = x ? `Trained${x.w && x.w.length ? ` · ${x.w.map(wLabel).join(', ')}` : ''}${x.t ? ` · ${fmtTime(x.t)}` : ''}` : 'Rest day';
+            const st = (p.steps || {})[k];
+            const detail = (x ? `Trained${x.w && x.w.length ? ` · ${x.w.map(wLabel).join(', ')}` : ''}${x.t ? ` · ${fmtTime(x.t)}` : ''}` : 'Rest day') + (st ? ` · 👟 ${fmtN(st)}` : '');
             return `<div class="day-row">${av(p)}<div class="grow"><strong>${esc(p.name)}</strong><small>${detail}</small></div>${x ? '<span class="pill good">💪</span>' : '<span class="pill">—</span>'}</div>`;
         };
+        const mySteps = (m.steps || {})[k];
         openSheet(`<h2 class="sheet-title">${parseKey(k).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</h2>
             ${row(m)}${b ? row(b) : ''}
             ${e ? chipsHtml(k, e) : ''}
-            <button class="btn ${e ? 'btn-danger' : 'btn-primary'}" data-action="toggle-day" data-key="${k}">${e ? 'Remove my session' : 'Log my gym session'}</button>`, { day: k });
+            <button class="btn ${e ? 'btn-danger' : 'btn-primary'}" data-action="toggle-day" data-key="${k}">${e ? 'Remove my session' : 'Log my gym session'}</button>
+            <button class="btn btn-ghost" data-action="log-steps" data-key="${k}">👟 ${mySteps ? `Edit my steps (${fmtN(mySteps)})` : 'Add my steps'}</button>`, { day: k });
     }
 
     function viewBattle() {
@@ -835,6 +909,7 @@
             html += buddyCard(m, stats(m), null);
         }
         html += challengeCard(people);
+        html += stepsBattleCard(people);
         html += `<section class="card"><h3>Last 12 weeks</h3>${weeksChart(people)}${legend(people)}</section>`;
         html += powerDaysCard(people) + recapCard(people) + allTimeCard(people);
         return html;
@@ -868,6 +943,25 @@
         }
         const side = (p, s) => `<div class="duo-side" style="--c:${colorOf(p)}"><span class="duo-val">${s.month}</span><span class="duo-lbl">${esc(p.name)}</span><span class="duo-sub">${pct(s.pace)} of goal pace</span></div>`;
         return `<section class="card"><h3>${today().toLocaleDateString(undefined, { month: 'long' })} battle</h3><div class="duo">${side(m, sm)}<span class="duo-vs">VS</span>${side(b, sb)}</div><p class="verdict">${esc(v)}</p></section>`;
+    }
+
+    function stepsBattleCard(people) {
+        const ss = people.map(stats);
+        const metrics = [['Today', s => s.stepsToday], ['This week', s => s.stepsWeek], ['This month', s => s.stepsMonth],
+            ['Daily average', s => s.stepsAvg], ['Best day', s => s.maxSteps], ['All time', s => s.stepsTotal]];
+        const head = `<div class="at-row at-head"><span></span>${people.map(p => `<span style="color:${colorOf(p)}">${esc(p.name)}</span>`).join('')}</div>`;
+        const rows = metrics.map(([label, f]) => {
+            const vals = ss.map(f), best = Math.max(...vals), contested = vals.some(v => v !== best);
+            return `<div class="at-row"><span>${label}</span>${vals.map(v => `<span class="${people.length > 1 && contested && v === best ? 'best' : ''}">${fmtN(v)}</span>`).join('')}</div>`;
+        }).join('');
+        let v = '';
+        if (people.length > 1) {
+            const [a, c] = ss;
+            v = !a.stepsWeek && !c.stepsWeek ? 'No steps logged this week yet. Get walking!'
+                : a.stepsWeek === c.stepsWeek ? 'Neck and neck on steps this week 🤝'
+                    : `${a.stepsWeek > c.stepsWeek ? 'You lead' : `${people[1].name} leads`} the step count this week.`;
+        }
+        return `<section class="card"><div class="card-head"><h3>👟 Step battle</h3><button class="btn btn-sm btn-ghost" data-action="log-steps" data-key="${todayKey()}">Log steps</button></div><div class="at" style="--n:${people.length}">${head}${rows}</div>${v ? `<p class="verdict">${esc(v)}</p>` : ''}</section>`;
     }
 
     function challengeCard(people) {
@@ -964,7 +1058,7 @@
         const seg = b ? `<div class="seg"><button class="${who === m ? 'on' : ''}" data-action="trophy-for" data-v="me">${esc(m.name)}</button><button class="${who === b ? 'on' : ''}" data-action="trophy-for" data-v="buddy">${esc(b.name)}</button></div>` : '';
         const grid = BADGES.map(x => {
             const v = Math.min(x.val(s), x.goal), ok = v >= x.goal;
-            return `<div class="badge ${ok ? '' : 'locked'}"><span class="ic">${x.icon}</span><span class="nm">${x.name}</span><span class="ds">${x.desc}</span>${ok ? '<span class="ok">Unlocked</span>' : `${bar(colorOf(who), v / x.goal, 'thin')}<span class="prog">${Math.floor(v)}/${x.goal}</span>`}</div>`;
+            return `<div class="badge ${ok ? '' : 'locked'}"><span class="ic">${x.icon}</span><span class="nm">${x.name}</span><span class="ds">${x.desc}</span>${ok ? '<span class="ok">Unlocked</span>' : `${bar(colorOf(who), v / x.goal, 'thin')}<span class="prog">${fmtN(Math.floor(v))}/${fmtN(x.goal)}</span>`}</div>`;
         }).join('');
         return `${seg}
             <section class="card trophy-head">${av(who, 'av-lg')}<div class="grow"><strong>${earned} / ${BADGES.length}</strong><small>badges unlocked by ${esc(who.name)}</small>${bar(colorOf(who), earned / BADGES.length)}</div></section>
@@ -988,7 +1082,9 @@
                     <div class="stepper"><button data-action="goal" data-d="-1" aria-label="Decrease goal">−</button><b>${m.weeklyGoal}</b><button data-action="goal" data-d="1" aria-label="Increase goal">+</button></div>
                 </div>
                 ${others.length > 1 ? `<label class="row"><span class="row-ic">🤝</span><span class="grow">Compare with</span><select data-change="buddy">${others.map(o => `<option value="${o.id}" ${b && o.id === b.id ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select></label>` : ''}
-                ${row('📨', 'Invite a friend', 'Share the app link', 'invite')}
+                ${row('�', 'Log steps', `${fmtN(s.stepsTotal)} steps logged in total`, 'log-steps')}
+                ${row('📸', 'Progress photos', `${state.photos.length} on this phone · private`, 'photos')}
+                ${row('�📨', 'Invite a friend', 'Share the app link', 'invite')}
             </div>
             <h4 class="list-title">Sync & security</h4>
             <div class="list">
@@ -1012,6 +1108,7 @@
     // ---------- sheets, toast, effects ----------
     function openSheet(html, opts = {}) {
         state.sheetDay = opts.day || null;
+        state.sheetKind = opts.kind || null;
         $('#sheet-body').innerHTML = html;
         $('#sheet').hidden = false;
         document.body.classList.add('no-scroll');
@@ -1025,6 +1122,7 @@
         $('#sheet').hidden = true;
         $('#sheet-body').innerHTML = '';
         state.sheetDay = null;
+        state.sheetKind = null;
         document.body.classList.remove('no-scroll');
     }
 
@@ -1082,6 +1180,18 @@
     }
 
     // ---------- mutations ----------
+    // Shows the unlock pop-up for any badge earned since `before`; returns true if one was shown.
+    function announceBadges(before) {
+        const after = earnedSet(me());
+        const x = BADGES.find(b => after.has(b.id) && !before.has(b.id));
+        if (!x) return false;
+        setTimeout(() => {
+            openSheet(`<div class="unlock"><span class="unlock-ic">${x.icon}</span><small>Badge unlocked</small><h2>${x.name}</h2><p class="muted">${x.desc}</p><button class="btn btn-primary" data-action="close-sheet">Let's go!</button></div>`);
+            celebrate(true);
+        }, 450);
+        return true;
+    }
+
     function checkIn(k) {
         const m = me();
         if (!m || k > todayKey() || m.days[k]) return;
@@ -1089,17 +1199,8 @@
         mutateMe(x => { x.days[k] = k === todayKey() ? { t: new Date().toISOString() } : {}; });
         if (k === todayKey()) state.checkedInAt = Date.now();
         haptic(25);
-        const after = earnedSet(me());
-        const fresh = BADGES.filter(x => after.has(x.id) && !before.has(x.id));
         if (k === todayKey()) celebrate();
-        if (fresh.length && !state.sheetDay) {
-            const x = fresh[0];
-            setTimeout(() => {
-                openSheet(`<div class="unlock"><span class="unlock-ic">${x.icon}</span><small>Badge unlocked</small><h2>${x.name}</h2><p class="muted">${x.desc}</p><button class="btn btn-primary" data-action="close-sheet">Let's go!</button></div>`);
-                celebrate(true);
-            }, 450);
-            return;
-        }
+        if (!state.sheetDay && announceBadges(before)) return;
         const s = stats(me());
         const msg = k === todayKey() ? (s.streak > 1 ? `🔥 ${s.streak}-day streak!` : 'Checked in 💪') : `Logged ${fmtShort(k)}`;
         toast(msg, { action: 'Undo', fn: () => removeDay(k, true) });
@@ -1139,8 +1240,200 @@
         }
     }
 
+    function openSteps(k) {
+        const m = me();
+        if (!m) return;
+        if (!DATE_RE.test(k || '') || k > todayKey()) k = todayKey();
+        const cur = (m.steps || {})[k] || '';
+        openSheet(`<h2 class="sheet-title">👟 Log steps</h2>
+            <form id="steps-form" autocomplete="off" novalidate>
+                <label class="field"><span>Date</span><input name="date" type="date" value="${k}" min="${MIN_DATE}" max="${todayKey()}" required></label>
+                <label class="field"><span>Total steps walked that day</span><input name="steps" type="number" inputmode="numeric" min="0" max="${MAX_STEPS}" step="1" value="${cur}" placeholder="e.g. 8500"></label>
+                <div class="chips left">${[1000, 2500, 5000].map(n => `<button type="button" class="tag" data-action="steps-add" data-n="${n}">+${fmtN(n)}</button>`).join('')}<button type="button" class="tag" data-action="steps-add" data-n="0">Clear</button></div>
+                <p class="form-err"></p>
+                <button class="btn btn-primary" type="submit">Save steps</button>
+                <p class="fine">Enter the day's total from your phone's health app. Saving 0 removes that day's steps.</p>
+            </form>`, { kind: 'steps' });
+    }
+
+    // ---------- progress photos (IndexedDB on this device only) ----------
+    const PhotoDB = {
+        conn: null,
+        open() {
+            if (!this.conn) {
+                this.conn = new Promise((resolve, reject) => {
+                    if (!window.indexedDB) { reject(new Error('Photo storage is not supported in this browser.')); return; }
+                    const r = indexedDB.open('gym-buddies', 1);
+                    r.onupgradeneeded = () => {
+                        const s = r.result.createObjectStore('photos', { keyPath: 'id' });
+                        s.createIndex('memberId', 'memberId');
+                    };
+                    r.onsuccess = () => resolve(r.result);
+                    r.onerror = () => reject(r.error || new Error('Could not open photo storage.'));
+                    r.onblocked = () => reject(new Error('Close other Gym Buddies tabs and try again.'));
+                });
+                this.conn.catch(() => { this.conn = null; });
+            }
+            return this.conn;
+        },
+        async run(mode, fn) {
+            const db = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('photos', mode);
+                let result;
+                const req = fn(tx.objectStore('photos'));
+                if (req) req.onsuccess = () => { result = req.result; };
+                tx.oncomplete = () => resolve(result);
+                tx.onerror = () => reject(tx.error);
+                tx.onabort = () => reject(tx.error && tx.error.name === 'QuotaExceededError' ? new Error('Phone storage is full. Free up space and try again.') : (tx.error || new Error('Saving failed.')));
+            });
+        },
+        list(memberId) { return this.run('readonly', s => s.index('memberId').getAll(memberId)); },
+        put(rec) { return this.run('readwrite', s => s.put(rec)); },
+        remove(id) { return this.run('readwrite', s => s.delete(id)); },
+        async removeMember(memberId) {
+            const list = await this.list(memberId);
+            for (const p of list || []) await this.remove(p.id);
+        }
+    };
+
+    function clearPhotoUrls() {
+        for (const p of state.photos) URL.revokeObjectURL(p.url);
+        state.photos = [];
+    }
+
+    async function loadPhotos() {
+        const id = state.meId;
+        if (!id) { clearPhotoUrls(); return; }
+        try {
+            const list = await PhotoDB.list(id);
+            if (id !== state.meId) return;
+            clearPhotoUrls();
+            state.photos = (list || [])
+                .filter(p => p && p.data && DATE_RE.test(p.date || ''))
+                .map(p => ({ id: p.id, date: p.date, createdAt: p.createdAt, url: URL.createObjectURL(new Blob([p.data], { type: p.type || 'image/jpeg' })) }))
+                .sort((a, b) => (b.date + b.createdAt).localeCompare(a.date + a.createdAt));
+            state.photoError = null;
+        } catch (e) {
+            clearPhotoUrls();
+            state.photoError = e.message || 'Photo storage is unavailable.';
+        }
+    }
+
+    function loadImage(file) {
+        return new Promise((resolve, reject) => {
+            const url = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+            img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read that image. Try a JPEG or PNG photo.')); };
+            img.src = url;
+        });
+    }
+
+    // Downscale to max 1600px JPEG so photos stay ~200-400 KB each.
+    async function compressImage(file) {
+        const img = await loadImage(file);
+        const w0 = img.naturalWidth, h0 = img.naturalHeight;
+        if (!w0 || !h0) throw new Error('That image looks empty.');
+        const scale = Math.min(1, 1600 / Math.max(w0, h0));
+        const w = Math.round(w0 * scale), h = Math.round(h0 * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.82));
+        if (!blob) throw new Error('Could not process that image.');
+        return { blob, w, h };
+    }
+
+    async function addPhoto(file) {
+        if (!file || !me() || state.photoBusy) return;
+        if (file.type && !file.type.startsWith('image/')) { toast('Please choose a photo'); return; }
+        if (file.size > MAX_PHOTO_BYTES) { toast('That photo is too large (max 40 MB)'); return; }
+        state.photoBusy = true;
+        toast('Saving photo…');
+        try {
+            const { blob, w, h } = await compressImage(file);
+            const data = await new Response(blob).arrayBuffer();
+            await PhotoDB.put({ id: `${Date.now()}-${randHex(4)}`, memberId: state.meId, date: todayKey(), createdAt: new Date().toISOString(), type: 'image/jpeg', w, h, data });
+            if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { /* best effort */ });
+            await loadPhotos();
+            render();
+            if (state.sheetKind === 'gallery') openGallery();
+            haptic(20);
+            toast('Progress photo saved 📸');
+        } catch (e) {
+            toast(e.message || 'Could not save that photo');
+        } finally {
+            state.photoBusy = false;
+        }
+    }
+
+    const findPhoto = id => state.photos.find(p => p.id === id);
+
+    function openGallery() {
+        const ps = state.photos;
+        openSheet(`<h2 class="sheet-title">📸 Progress photos</h2>
+            <p class="muted">${ps.length} photo${ps.length === 1 ? '' : 's'} · 🔒 stored only on this phone</p>
+            <label class="btn btn-primary" for="photo-input" role="button" tabindex="0">Add photo</label>
+            ${ps.length >= 2 ? `<button class="btn btn-ghost" data-action="photo-compare" data-id="${esc(ps[0].id)}">Compare first vs latest</button>` : ''}
+            ${state.photoError ? `<p class="form-err">${esc(state.photoError)}</p>` : ''}
+            <div class="ph-grid">${ps.map(p => `<button class="ph" data-action="photo-view" data-id="${esc(p.id)}"><img src="${p.url}" alt="Progress photo ${p.date}" loading="lazy"><span>${fmtShort(p.date)}</span></button>`).join('')}</div>
+            <p class="fine">Photos are never uploaded. Use Share to send one to your buddy, or to back it up.</p>`, { kind: 'gallery' });
+    }
+
+    function openPhoto(id) {
+        const ps = state.photos, p = findPhoto(id);
+        if (!p) { openGallery(); return; }
+        const first = ps[ps.length - 1];
+        const day = dayDiff(parseKey(first.date), parseKey(p.date));
+        openSheet(`<div class="ph-view"><img src="${p.url}" alt="Progress photo ${p.date}"></div>
+            <h2 class="sheet-title">${fmtLong(p.date)}</h2>
+            <p class="muted">${p === first ? 'Your first progress photo' : `Day ${day} of your journey`}</p>
+            <div class="btn-row">
+                <button class="btn btn-ghost" data-action="photo-share" data-id="${esc(p.id)}">Share</button>
+                ${p !== first ? `<button class="btn btn-ghost" data-action="photo-compare" data-id="${esc(p.id)}">Compare</button>` : ''}
+            </div>
+            <button class="btn btn-danger" data-action="photo-delete" data-id="${esc(p.id)}">Delete photo</button>
+            <button class="btn btn-ghost" data-action="photos">Back to all photos</button>`, { kind: 'photo' });
+    }
+
+    function openCompare(id) {
+        const ps = state.photos, p = findPhoto(id) || ps[0], first = ps[ps.length - 1];
+        if (!p || !first || p === first) { openGallery(); return; }
+        const days = dayDiff(parseKey(first.date), parseKey(p.date));
+        const side = (x, label) => `<figure><img src="${x.url}" alt="${label} photo ${x.date}"><figcaption><b>${label}</b>${fmtShort(x.date)}</figcaption></figure>`;
+        openSheet(`<h2 class="sheet-title">Then vs now</h2>
+            <p class="muted">${days} day${days === 1 ? '' : 's'} apart</p>
+            <div class="ph-compare">${side(first, 'First')}${side(p, 'Latest')}</div>
+            <button class="btn btn-ghost" data-action="photos">Back to all photos</button>`, { kind: 'compare' });
+    }
+
+    async function sharePhoto(id) {
+        const p = findPhoto(id);
+        if (!p) return;
+        const name = `progress-${p.date}.jpg`;
+        try {
+            const blob = await (await fetch(p.url)).blob();
+            const file = new File([blob], name, { type: 'image/jpeg' });
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                await navigator.share({ files: [file], title: 'Progress photo' });
+                return;
+            }
+        } catch (e) {
+            if (e && e.name === 'AbortError') return;
+        }
+        const a = document.createElement('a');
+        a.href = p.url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }
+
     function doLogout() {
         closeSheet();
+        clearPhotoUrls();
         ls.del(K.me);
         state.meId = null;
         state.pending = false;
@@ -1257,6 +1550,7 @@
             const id = state.meId;
             try {
                 await Store.remove(id);
+                await PhotoDB.removeMember(id).catch(() => { /* photos are optional */ });
                 delete state.members[id];
                 ls.set(K.cache, state.members);
                 doLogout();
@@ -1267,6 +1561,37 @@
             }
         },
         'close-sheet': closeSheet,
+        'log-steps': el => openSteps(el.dataset.key),
+        'steps-add': el => {
+            const inp = el.closest('form').elements.steps;
+            const n = Number(el.dataset.n);
+            inp.value = n ? clamp((parseInt(inp.value, 10) || 0) + n, 0, MAX_STEPS) : '';
+            haptic(8);
+        },
+        photos: openGallery,
+        'photo-view': el => openPhoto(el.dataset.id),
+        'photo-compare': el => openCompare(el.dataset.id),
+        'photo-share': el => sharePhoto(el.dataset.id),
+        'photo-delete': el => {
+            const p = findPhoto(el.dataset.id);
+            if (!p) return;
+            openSheet(`<h2 class="sheet-title">Delete this photo?</h2><p class="muted">Photo from ${fmtLong(p.date)}. This can't be undone.</p>
+                <button class="btn btn-danger" data-action="photo-delete-confirm" data-id="${esc(p.id)}">Delete forever</button>
+                <button class="btn btn-ghost" data-action="photo-view" data-id="${esc(p.id)}">Cancel</button>`, { kind: 'photo' });
+        },
+        'photo-delete-confirm': async el => {
+            el.disabled = true;
+            try {
+                await PhotoDB.remove(el.dataset.id);
+                await loadPhotos();
+                render();
+                if (state.photos.length) openGallery(); else closeSheet();
+                toast('Photo deleted');
+            } catch (e) {
+                el.disabled = false;
+                toast(e.message || 'Could not delete photo');
+            }
+        },
         'pick-profile': el => { state.auth = { step: 'pin', id: el.dataset.id, pin: '' }; renderAuth(); },
         'go-register': () => { state.auth = { step: 'register' }; renderAuth(); window.scrollTo(0, 0); },
         'auth-back': () => { state.auth = { step: 'pick' }; renderAuth(); },
@@ -1333,6 +1658,26 @@
             mutateMe(x => { x.pinSalt = salt; x.pinHash = hash; });
             toast('PIN updated 🔒');
         },
+        'steps-form': f => {
+            const k = f.elements.date.value;
+            const raw = String(f.elements.steps.value).trim();
+            if (!DATE_RE.test(k) || k > todayKey() || k < MIN_DATE) return formError(f, 'Pick a date up to today');
+            if (raw === '') return formError(f, 'Enter your step count (0 to remove)');
+            const n = Number(raw);
+            if (!Number.isInteger(n) || n < 0 || n > MAX_STEPS) return formError(f, `Enter a whole number from 0 to ${fmtN(MAX_STEPS)}`);
+            const before = earnedSet(me());
+            const had = (me().steps || {})[k];
+            closeSheet();
+            mutateMe(x => {
+                x.steps = x.steps || {};
+                if (n === 0) delete x.steps[k]; else x.steps[k] = n;
+            });
+            haptic(15);
+            if (n && announceBadges(before)) return;
+            toast(n ? `👟 ${fmtN(n)} steps saved for ${k === todayKey() ? 'today' : fmtShort(k)}` : 'Steps removed', had && n !== had ? {
+                action: 'Undo', fn: () => mutateMe(x => { x.steps = x.steps || {}; x.steps[k] = had; })
+            } : undefined);
+        },
         'token-form': f => {
             const t = f.elements.token.value.trim();
             if (!/^[A-Za-z0-9_]{20,255}$/.test(t)) return formError(f, "That doesn't look like a GitHub token");
@@ -1359,6 +1704,18 @@
     });
 
     document.addEventListener('change', e => {
+        if (e.target.id === 'photo-input') {
+            const file = e.target.files && e.target.files[0];
+            // Reset so picking the same photo again still fires a change.
+            e.target.value = '';
+            addPhoto(file);
+            return;
+        }
+        if (e.target.name === 'date' && e.target.form && e.target.form.id === 'steps-form') {
+            const k = e.target.value, m = me();
+            if (m && DATE_RE.test(k)) e.target.form.elements.steps.value = (m.steps || {})[k] || '';
+            return;
+        }
         if (e.target.matches('[data-change="buddy"]')) {
             state.buddyId = e.target.value;
             ls.set(K.buddy, state.buddyId);
@@ -1368,6 +1725,10 @@
 
     document.addEventListener('keydown', e => {
         if (e.key === 'Escape' && !$('#sheet').hidden) closeSheet();
+        if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('label[for="photo-input"]')) {
+            e.preventDefault();
+            $('#photo-input').click();
+        }
         if (!me() && state.auth.step === 'pin') {
             if (/^\d$/.test(e.key)) pinKey(e.key);
             else if (e.key === 'Backspace') pinKey('del');
@@ -1394,7 +1755,9 @@
                     days[keyOf(d)] = { t: t.toISOString(), w: [WORKOUTS[Math.floor(Math.random() * WORKOUTS.length)][0]] };
                 }
             }
-            return { id: `${slug(name)}-demo`, name, emoji, color, weeklyGoal: 4, pinSalt: '', pinHash: '', createdAt: addDays(today(), -140).toISOString(), updatedAt: new Date().toISOString(), days };
+            const steps = {};
+            for (let i = 0; i < 60; i++) if (Math.random() < 0.8) steps[keyOf(addDays(today(), -i))] = 3000 + Math.floor(Math.random() * 11000);
+            return { id: `${slug(name)}-demo`, name, emoji, color, weeklyGoal: 4, pinSalt: '', pinHash: '', createdAt: addDays(today(), -140).toISOString(), updatedAt: new Date().toISOString(), days, steps };
         };
         const a = mk('Gokul', '🦁', COLORS[0], 0.62), b = mk('Nithin', '🐺', COLORS[1], 0.52);
         ls.set(K.db, { members: { [a.id]: a, [b.id]: b } });
@@ -1411,6 +1774,7 @@
             state.loaded = Object.keys(state.members).length > 0;
         }
         render();
+        if (state.meId) loadPhotos().then(render);
         await sync();
         scheduleSync();
         if ('serviceWorker' in navigator && !['localhost', '127.0.0.1'].includes(location.hostname)) {
