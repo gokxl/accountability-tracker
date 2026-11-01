@@ -1,6 +1,6 @@
 'use strict';
 (function () {
-    const APP_VERSION = '3.0.1';
+    const APP_VERSION = '3.0.2';
     // config.js uses a top-level const, which is not exposed as window.CONFIG.
     const CFG = typeof CONFIG !== 'undefined' ? CONFIG : {};
     const qs = new URLSearchParams(location.search);
@@ -493,6 +493,10 @@
     // ---------- auth ----------
     function renderAuth() {
         const a = state.auth, root = $('#auth');
+        // Background syncs must not wipe a half-filled sign-up form or PIN entry.
+        if (a.step === 'register' && $('#register-form')) return;
+        if (a.step === 'pin' && root.dataset.pinFor === a.id && $('.pin-wrap')) return;
+        root.dataset.pinFor = a.step === 'pin' ? a.id : '';
         if (a.step === 'pin') {
             const m = state.members[a.id];
             if (!m) { state.auth = { step: 'pick' }; renderAuth(); return; }
@@ -539,7 +543,7 @@
             <form id="register-form" class="reg" autocomplete="off" novalidate>
                 <h1>Create your account</h1>
                 <p class="muted">Takes 20 seconds. Then the competition starts.</p>
-                <label class="field"><span>Your name</span><input name="name" maxlength="20" required placeholder="e.g. Nithin" autocapitalize="words" enterkeyhint="next"></label>
+                <label class="field"><span>Your name</span><input name="name" maxlength="20" required placeholder="e.g. Gokul" autocapitalize="words" enterkeyhint="next"></label>
                 <div class="field"><span>Pick your avatar</span>${emojiPicker(emoji)}</div>
                 <div class="field"><span>Your color</span>${colorPicker(color)}</div>
                 <div class="field"><span>Weekly goal</span>
