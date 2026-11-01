@@ -41,7 +41,7 @@ def token():
 
 
 def call(method, url, body=None, auth=False):
-    headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'gym-data-tool'}
+    headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'gym-data-tool', 'Cache-Control': 'no-cache'}
     if auth:
         headers['Authorization'] = f'Bearer {token()}'
     data = json.dumps(body).encode() if body is not None else None
