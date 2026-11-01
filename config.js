@@ -25,7 +25,12 @@ const CONFIG = {
     DEFAULT_USERS: {
         person1: { name: 'Alex', id: 'person1' },
         person2: { name: 'Jordan', id: 'person2' }
-    }
+    },
+
+    // Gym tracker (index.html). Each member is stored as its own gym-*.json file in this Gist.
+    GYM_GIST_ID: 'b5a7d32dc701472f020d199ee30de815',
+    GYM_SYNC_SECONDS: 60,
+    GYM_DEFAULT_WEEKLY_GOAL: 4
 };
 
 // Instructions for setup:
