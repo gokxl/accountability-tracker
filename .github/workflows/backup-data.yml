@@ -1,0 +1,67 @@
+name: Backup gym data
+
+on:
+  schedule:
+    - cron: '30 18 * * *'   # daily at 00:00 IST
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gym-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    env:
+      GIST_ID: b5a7d32dc701472f020d199ee30de815
+      BRANCH: data-backups
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare backup branch
+        run: |
+          set -euo pipefail
+          git config user.name "gym-backup-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
+            git fetch -q origin "$BRANCH"
+            git worktree add -q -B "$BRANCH" bk "origin/$BRANCH"
+          else
+            git worktree add -q --detach bk
+            cd bk && git checkout -q --orphan "$BRANCH" && git rm -rfq . && cd ..
+          fi
+
+      - name: Snapshot gist
+        run: |
+          set -euo pipefail
+          curl -fsSL -H "Accept: application/vnd.github+json" "https://api.github.com/gists/$GIST_ID" -o gist.json
+          python3 - <<'PY'
+          import json, os, datetime, urllib.request
+          gist = json.load(open('gist.json'))
+          day = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+          for folder in (f'bk/snapshots/{day}', 'bk/latest'):
+              os.makedirs(folder, exist_ok=True)
+              for old in os.listdir(folder):
+                  os.remove(os.path.join(folder, old))
+          for name, f in gist['files'].items():
+              text = f['content']
+              if f.get('truncated'):
+                  text = urllib.request.urlopen(f['raw_url']).read().decode()
+              for folder in (f'bk/snapshots/{day}', 'bk/latest'):
+                  open(os.path.join(folder, name), 'w', encoding='utf-8').write(text)
+          meta = {'gist_revision': gist['history'][0]['version'], 'gist_updated_at': gist['updated_at'], 'files': sorted(gist['files'])}
+          json.dump(meta, open(f'bk/snapshots/{day}/_meta.json', 'w'), indent=2)
+          print(f'Backed up {len(gist["files"])} files for {day}')
+          PY
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          cd bk
+          git add -A
+          if git diff --cached --quiet; then echo "No changes since last backup"; exit 0; fi
+          git commit -qm "Backup $(date -u +%F)"
+          git push -q origin "$BRANCH"
