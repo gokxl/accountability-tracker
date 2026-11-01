@@ -1,7 +1,8 @@
 'use strict';
 (function () {
-    const APP_VERSION = '3.0.0';
-    const CFG = window.CONFIG || {};
+    const APP_VERSION = '3.0.1';
+    // config.js uses a top-level const, which is not exposed as window.CONFIG.
+    const CFG = typeof CONFIG !== 'undefined' ? CONFIG : {};
     const qs = new URLSearchParams(location.search);
     const LOCAL = qs.has('local') || !CFG.GYM_GIST_ID;
     const GIST_ID = CFG.GYM_GIST_ID;
