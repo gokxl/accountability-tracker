@@ -1,6 +1,6 @@
 'use strict';
 (function () {
-    const APP_VERSION = '3.0.2';
+    const APP_VERSION = '3.0.3';
     // config.js uses a top-level const, which is not exposed as window.CONFIG.
     const CFG = typeof CONFIG !== 'undefined' ? CONFIG : {};
     const qs = new URLSearchParams(location.search);
@@ -101,6 +101,7 @@
         cal: new Date(today().getFullYear(), today().getMonth(), 1),
         trophyFor: 'me',
         auth: { step: 'pick' },
+        pinLocks: {},
         etag: null,
         loaded: false,
         syncing: false,
@@ -147,6 +148,11 @@
             const db = ls.get(K.db, { members: {} }) || { members: {} };
             db.members = db.members || {};
             db.members[m.id] = m;
+            ls.set(K.db, db);
+        },
+        async remove(id) {
+            const db = ls.get(K.db, { members: {} }) || { members: {} };
+            if (db.members) delete db.members[id];
             ls.set(K.db, db);
         }
     };
@@ -196,6 +202,22 @@
             if (res.status === 403 || res.status === 404) throw new Error('This sync key can\'t edit the gist (needs "gist" scope from the gist owner)');
             if (!res.ok) throw new Error(`Save failed (${res.status})`);
             state.etag = null;
+        },
+        async remove(id) {
+            const token = ls.get(K.token);
+            if (!token) throw Object.assign(new Error('Sync key needed'), { code: 'NO_TOKEN' });
+            const res = await fetch(`${API}/${GIST_ID}`, {
+                method: 'PATCH',
+                headers: { Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ files: { [fileName(id)]: null } })
+            });
+            if (res.status === 401) {
+                ls.del(K.token);
+                throw Object.assign(new Error('Sync key rejected'), { code: 'NO_TOKEN' });
+            }
+            // 422 means the file is already gone.
+            if (!res.ok && res.status !== 422) throw new Error(`Delete failed (${res.status})`);
+            state.etag = null;
         }
     };
 
@@ -225,10 +247,13 @@
     function applyRemote(remote) {
         const before = state.members;
         const local = me();
+        let accountGone = false;
         // Keep this device's copy of "me" when it has unsynced edits or is newer than what GitHub returned.
         if (local) {
             const r = remote[local.id];
-            if (!r || state.pending || (r.updatedAt || '') < (local.updatedAt || '')) remote[local.id] = local;
+            const justSaved = Date.now() - (state.lastSaveAt || 0) < 60000;
+            if (!r && !state.pending && !justSaved) accountGone = true;
+            else if (!r || state.pending || (r.updatedAt || '') < (local.updatedAt || '')) remote[local.id] = local;
         }
         if (state.loaded) {
             const tk = todayKey();
@@ -240,6 +265,10 @@
         }
         state.members = remote;
         ls.set(K.cache, remote);
+        if (accountGone) {
+            doLogout();
+            toast('That account was deleted. Pick or create a profile.');
+        }
     }
 
     function scheduleSync() {
@@ -273,6 +302,7 @@
         const rev = state.rev;
         try {
             await Store.save(me());
+            state.lastSaveAt = Date.now();
             if (state.rev === rev) {
                 state.pending = false;
                 ls.set(K.pending, false);
@@ -281,8 +311,10 @@
             }
             state.syncError = null;
         } catch (e) {
-            if (e.code === 'NO_TOKEN') askToken();
-            else {
+            if (e.code === 'NO_TOKEN') {
+                // Prompt once per session; afterwards the "Not synced" pill is the way back in.
+                if (!state.tokenAsked) { state.tokenAsked = true; askToken(); }
+            } else {
                 state.syncError = e.message;
                 toast(navigator.onLine ? e.message : 'Offline — saved on this phone, will sync later');
             }
@@ -368,17 +400,16 @@
     function h2h(a, b) {
         const sa = stats(a), sb = stats(b);
         let aw = 0, bw = 0, am = 0, bm = 0;
+        // Only score the period when both people had accounts.
+        const since = new Date(Math.max(Date.parse(a.createdAt), Date.parse(b.createdAt)));
         const curW = startOfWeek(today());
-        const first = [...Object.keys(a.days), ...Object.keys(b.days)].sort()[0];
-        if (first) {
-            for (let w = startOfWeek(parseKey(first)); w < curW; w = addDays(w, 7)) {
-                const k = keyOf(w), x = sa.weeks[k] || 0, y = sb.weeks[k] || 0;
-                if (x > y) aw++; else if (y > x) bw++;
-            }
+        for (let w = startOfWeek(since); w < curW; w = addDays(w, 7)) {
+            const k = keyOf(w), x = sa.weeks[k] || 0, y = sb.weeks[k] || 0;
+            if (x > y) aw++; else if (y > x) bw++;
         }
-        const curM = todayKey().slice(0, 7);
+        const curM = todayKey().slice(0, 7), sinceM = keyOf(since).slice(0, 7);
         for (const k of new Set([...Object.keys(sa.months), ...Object.keys(sb.months)])) {
-            if (k >= curM) continue;
+            if (k >= curM || k < sinceM) continue;
             const x = sa.months[k] || 0, y = sb.months[k] || 0;
             if (x > y) am++; else if (y > x) bm++;
         }
@@ -581,6 +612,11 @@
     async function pinKey(k) {
         const a = state.auth;
         if (a.step !== 'pin' || a.checking) return;
+        const lock = state.pinLocks[a.id] || (state.pinLocks[a.id] = { fails: 0, until: 0 });
+        if (Date.now() < lock.until) {
+            $('#pin-err').textContent = `Too many tries. Wait ${Math.ceil((lock.until - Date.now()) / 1000)}s`;
+            return;
+        }
         a.pin = a.pin || '';
         if (k === 'del') a.pin = a.pin.slice(0, -1);
         else if (a.pin.length < 4) a.pin += k;
@@ -596,10 +632,11 @@
             toast(`Welcome back, ${m.name} 💪`);
         } else {
             a.pin = '';
+            if (++lock.fails >= 5) { lock.fails = 0; lock.until = Date.now() + 30000; }
             haptic([30, 40, 30]);
             shake('.pin-dots');
             updatePinDots();
-            $('#pin-err').textContent = 'Wrong PIN — try again';
+            $('#pin-err').textContent = lock.until > Date.now() ? 'Too many tries. Wait 30s' : 'Wrong PIN — try again';
         }
     }
 
@@ -958,6 +995,7 @@
                 ${row('🔄', 'Sync now', esc(syncText()), 'sync-now')}
                 ${LOCAL ? '' : row('🔑', 'Sync key', ls.get(K.token) ? 'Saved on this device' : 'Not set — check-ins stay on this phone', 'token')}
                 ${row('🔒', 'Change PIN', '', 'change-pin')}
+                ${row('🗑️', 'Delete my account', 'Removes your profile and history', 'delete-account')}
             </div>
             <h4 class="list-title">App</h4>
             <div class="list">
@@ -1049,6 +1087,7 @@
         if (!m || k > todayKey() || m.days[k]) return;
         const before = earnedSet(m);
         mutateMe(x => { x.days[k] = k === todayKey() ? { t: new Date().toISOString() } : {}; });
+        if (k === todayKey()) state.checkedInAt = Date.now();
         haptic(25);
         const after = earnedSet(me());
         const fresh = BADGES.filter(x => after.has(x.id) && !before.has(x.id));
@@ -1116,6 +1155,8 @@
         checkin: () => {
             const k = todayKey();
             if (!me().days[k]) { checkIn(k); return; }
+            // Ignore an accidental double tap right after checking in.
+            if (Date.now() - (state.checkedInAt || 0) < 1200) return;
             openSheet(`<h2 class="sheet-title">Undo today's check-in?</h2><p class="muted">This removes today's session from your streak and stats.</p>
                 <button class="btn btn-danger" data-action="confirm-remove" data-key="${k}">Remove check-in</button>
                 <button class="btn btn-ghost" data-action="close-sheet">Keep it</button>`);
@@ -1203,6 +1244,28 @@
                 <button class="btn btn-danger" data-action="force-logout">Log out anyway</button>`);
         },
         'force-logout': doLogout,
+        'delete-account': () => {
+            const m = me();
+            openSheet(`<h2 class="sheet-title">Delete your account?</h2>
+                <p class="muted">This permanently removes ${esc(m.name)} and all ${Object.keys(m.days).length} logged sessions for everyone. It can't be undone.</p>
+                <button class="btn btn-danger" data-action="confirm-delete">Delete forever</button>
+                <button class="btn btn-ghost" data-action="close-sheet">Cancel</button>`);
+        },
+        'confirm-delete': async el => {
+            if (!LOCAL && !ls.get(K.token)) { askToken(true); return; }
+            el.disabled = true;
+            const id = state.meId;
+            try {
+                await Store.remove(id);
+                delete state.members[id];
+                ls.set(K.cache, state.members);
+                doLogout();
+                toast('Account deleted');
+            } catch (e) {
+                el.disabled = false;
+                if (e.code === 'NO_TOKEN') askToken(true); else toast(e.message);
+            }
+        },
         'close-sheet': closeSheet,
         'pick-profile': el => { state.auth = { step: 'pin', id: el.dataset.id, pin: '' }; renderAuth(); },
         'go-register': () => { state.auth = { step: 'register' }; renderAuth(); window.scrollTo(0, 0); },
