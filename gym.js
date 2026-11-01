@@ -1,6 +1,6 @@
 'use strict';
 (function () {
-    const APP_VERSION = '3.1.0';
+    const APP_VERSION = '3.2.0';
     // config.js uses a top-level const, which is not exposed as window.CONFIG.
     const CFG = typeof CONFIG !== 'undefined' ? CONFIG : {};
     const qs = new URLSearchParams(location.search);
@@ -25,6 +25,12 @@
     const MAX_STEPS = 200000;
     const MIN_DATE = '2020-01-01';
     const MAX_PHOTO_BYTES = 40 * 1024 * 1024;
+    const CALIBRATION_DAYS = 14;
+    const PENALTY_DAYS = 90;
+    // Difficulty: bigger weekly plans are harder to keep, so they earn a mild multiplier (4/wk = 1.00).
+    const DIFF = g => 0.80 + 0.05 * g;
+    // Plan-change penalty escalates with the (weighted) number of changes in the last 90 days.
+    const PENALTY = c => Math.max(0.6, 1 - 0.05 * c * (c + 1) / 2);
     const COLOR_RE = /^#[0-9a-f]{6}$/i;
     const FILE_RE = /^gym-[a-z0-9-]{3,40}\.json$/;
 
@@ -62,6 +68,29 @@
         del(k) { try { localStorage.removeItem(k); } catch (e) { /* blocked */ } }
     };
 
+    // Plan in force for the week starting on Monday `wk` (history is sorted by `from`).
+    function goalFor(m, wk) {
+        let g = m.goalHistory[0].goal;
+        for (const e of m.goalHistory) {
+            if (e.from <= wk) g = e.goal; else break;
+        }
+        return g;
+    }
+
+    // Weighted plan changes in the 90 days up to `atMs` (lowering = 1, raising = 0.5, free = 0).
+    function changeLoad(m, atMs) {
+        const lo = atMs - PENALTY_DAYS * 864e5;
+        return m.goalHistory.reduce((c, e) => {
+            const t = Date.parse(e.at);
+            return c + (e.w && t > lo && t <= atMs ? e.w : 0);
+        }, 0);
+    }
+
+    // A week counts toward the month containing its Thursday (where most of its days fall).
+    const scoreMonthOf = wk => keyOf(addDays(parseKey(wk), 3)).slice(0, 7);
+    const monthName = (mk, opts = { month: 'long' }) => parseKey(`${mk}-01`).toLocaleDateString(undefined, opts);
+    const fmtPts = v => (v === null || v === undefined ? '—' : String(Math.round(v)));
+
     async function hashPin(pin, salt) {
         const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${salt}:${pin}`));
         return Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('');
@@ -90,15 +119,36 @@
                 if (DATE_RE.test(k) && Number.isInteger(n) && n > 0 && n <= MAX_STEPS) steps[k] = n;
             }
         }
+        const createdAt = typeof raw.createdAt === 'string' && !isNaN(Date.parse(raw.createdAt)) ? raw.createdAt : new Date().toISOString();
+        const startWk = keyOf(startOfWeek(new Date(createdAt)));
+        let gh = [];
+        if (Array.isArray(raw.goalHistory)) {
+            for (const e of raw.goalHistory.slice(0, 200)) {
+                const g = e ? parseInt(e.goal, 10) : NaN;
+                if (!e || !DATE_RE.test(e.from || '') || !(g >= 1 && g <= 7)) continue;
+                gh.push({
+                    from: e.from, goal: g,
+                    at: typeof e.at === 'string' && !isNaN(Date.parse(e.at)) ? e.at : createdAt,
+                    w: [0, 0.5, 1].includes(e.w) ? e.w : 0
+                });
+            }
+        }
+        gh.sort((a, b) => a.from.localeCompare(b.from) || a.at.localeCompare(b.at));
+        gh = gh.filter((e, i) => !gh[i + 1] || gh[i + 1].from !== e.from);
+        if (!gh.length || gh[0].from > startWk) {
+            const legacy = clamp(parseInt(raw.weeklyGoal, 10) || DEFAULT_GOAL, 1, 7);
+            gh.unshift({ from: startWk, goal: gh.length ? gh[0].goal : legacy, at: createdAt, w: 0 });
+        }
         return {
             id: raw.id,
             name: cleanName(raw.name) || 'Member',
             emoji: EMOJIS.includes(raw.emoji) ? raw.emoji : '💪',
             color: COLOR_RE.test(raw.color || '') ? raw.color : COLORS[0],
-            weeklyGoal: clamp(parseInt(raw.weeklyGoal, 10) || DEFAULT_GOAL, 1, 7),
+            weeklyGoal: goalFor({ goalHistory: gh }, keyOf(startOfWeek(today()))),
+            goalHistory: gh,
             pinHash: typeof raw.pinHash === 'string' ? raw.pinHash : '',
             pinSalt: typeof raw.pinSalt === 'string' ? raw.pinSalt : '',
-            createdAt: typeof raw.createdAt === 'string' && !isNaN(Date.parse(raw.createdAt)) ? raw.createdAt : new Date().toISOString(),
+            createdAt,
             updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : '',
             days,
             steps
@@ -359,55 +409,66 @@
     function computeStats(m) {
         const keys = Object.keys(m.days).sort();
         const set = new Set(keys);
-        const t = today(), tk = keyOf(t), goal = m.weeklyGoal;
+        const t = today(), tk = keyOf(t), nowMs = Date.now();
 
         // Today doesn't break the streak until it's over.
         let streak = 0;
         for (let d = set.has(tk) ? t : addDays(t, -1); set.has(keyOf(d)); d = addDays(d, -1)) streak++;
 
-        let comeback = false, weekend = 0, early = 0, prev = null;
         const dow = [0, 0, 0, 0, 0, 0, 0], months = {}, weeks = {};
         for (const k of keys) {
             const d = parseKey(k);
-            if (prev && dayDiff(prev, d) >= 8) comeback = true;
-            prev = d;
-            const wd = (d.getDay() + 6) % 7;
-            dow[wd]++;
-            if (wd >= 5) weekend++;
-            const mk = k.slice(0, 7);
-            months[mk] = (months[mk] || 0) + 1;
+            dow[(d.getDay() + 6) % 7]++;
+            months[k.slice(0, 7)] = (months[k.slice(0, 7)] || 0) + 1;
             const wk = keyOf(startOfWeek(d));
             weeks[wk] = (weeks[wk] || 0) + 1;
-            const e = m.days[k];
-            if (e.t && new Date(e.t).getHours() < 8) early++;
         }
 
-        const wkStart = startOfWeek(t);
-        const week = weeks[keyOf(wkStart)] || 0;
-
-        // Week streak: consecutive weeks hitting the goal; the current week only counts once it's hit.
-        let weekStreak = week >= goal ? 1 : 0;
-        const firstWeek = keys.length ? startOfWeek(parseKey(keys[0])) : wkStart;
-        for (let w = addDays(wkStart, -7); w >= firstWeek && (weeks[keyOf(w)] || 0) >= goal; w = addDays(w, -7)) weekStreak++;
-
-        let longestWeek = 0, run = 0;
-        for (let w = firstWeek; w <= wkStart; w = addDays(w, 7)) {
-            if ((weeks[keyOf(w)] || 0) >= goal) { run++; longestWeek = Math.max(longestWeek, run); } else run = 0;
+        // Weekly points = completion (capped at 100%) x difficulty x plan-change penalty.
+        const curWk = keyOf(startOfWeek(t));
+        const created = new Date(m.createdAt);
+        created.setHours(0, 0, 0, 0);
+        const startWk = keyOf(startOfWeek(created));
+        const scored = [];
+        for (let w = parseKey(startWk); keyOf(w) <= curWk; w = addDays(w, 7)) {
+            const wk = keyOf(w), goal = goalFor(m, wk);
+            // The joining week only expects a share of the plan for the days left in it.
+            const plan = wk === startWk ? Math.max(1, Math.round(goal * (7 - (created.getDay() + 6) % 7) / 7)) : goal;
+            const done = weeks[wk] || 0, A = Math.min(done / plan, 1), complete = wk < curWk;
+            const mult = PENALTY(changeLoad(m, complete ? addDays(w, 7).getTime() - 1 : nowMs));
+            scored.push({ wk, goal, plan, done, A, mult, pts: A * DIFF(goal) * mult * 100, complete, month: scoreMonthOf(wk) });
         }
+        const cur = scored.length ? scored[scored.length - 1] : {
+            wk: curWk, goal: m.weeklyGoal, plan: m.weeklyGoal, done: weeks[curWk] || 0, A: 0,
+            mult: PENALTY(changeLoad(m, nowMs)), pts: 0, complete: false, month: scoreMonthOf(curWk)
+        };
+        const closedWeeks = scored.filter(x => x.complete);
 
-        const month = months[tk.slice(0, 7)] || 0;
-        const pace = month / (goal * t.getDate() / 7);
+        let weekStreak = cur.A >= 1 ? 1 : 0;
+        for (let i = closedWeeks.length - 1; i >= 0 && closedWeeks[i].A >= 1; i--) weekStreak++;
+        let longestWeek = 0, run = 0, comeback = false;
+        scored.forEach((x, i) => {
+            if (x.A >= 1) { run++; longestWeek = Math.max(longestWeek, run); } else if (x.complete) run = 0;
+            if (i && x.complete && x.A >= 1 && scored[i - 1].A < 0.5) comeback = true;
+        });
+
+        const monthWeeks = {}, monthScore = {};
+        for (const x of closedWeeks) (monthWeeks[x.month] = monthWeeks[x.month] || []).push(x);
+        for (const [mk, arr] of Object.entries(monthWeeks)) monthScore[mk] = arr.reduce((sum, x) => sum + x.pts, 0) / arr.length;
+        const closedMonths = Object.keys(monthScore).filter(mk => mk < cur.month);
+        const lastChange = Math.max(Date.parse(m.createdAt), ...m.goalHistory.filter(e => e.w > 0).map(e => Date.parse(e.at)));
+
         const firstDay = keys.length ? parseKey(keys[0]) : null;
         const weeksActive = firstDay ? Math.max(1, Math.ceil((dayDiff(firstDay, t) + 1) / 7)) : 0;
 
-        const steps = m.steps || {}, wkKey = keyOf(wkStart), mKey = tk.slice(0, 7);
+        const steps = m.steps || {}, mKey = tk.slice(0, 7);
         let stepsTotal = 0, stepsWeek = 0, stepsMonth = 0, maxSteps = 0, stepDays = 0;
         for (const [k, n] of Object.entries(steps)) {
             if (k > tk) continue;
             stepsTotal += n;
             stepDays++;
             if (n > maxSteps) maxSteps = n;
-            if (k >= wkKey) stepsWeek += n;
+            if (k >= curWk) stepsWeek += n;
             if (k.startsWith(mKey)) stepsMonth += n;
         }
 
@@ -415,10 +476,16 @@
             stepsTotal, stepsWeek, stepsMonth, maxSteps, stepDays,
             stepsToday: steps[tk] || 0,
             stepsAvg: stepDays ? Math.round(stepsTotal / stepDays) : 0,
-            total: keys.length, streak, longest: longestRun(keys), week, weekStreak, longestWeek, month, pace,
-            dow, months, weeks, weekend, early, comeback,
-            maxWeek: Math.max(0, ...Object.values(weeks)),
-            bestMonth: Math.max(0, ...Object.values(months)),
+            total: keys.length, streak, longest: longestRun(keys),
+            week: cur.done, plan: cur.plan, goal: cur.goal, weekA: cur.A, weekPts: cur.pts, mult: cur.mult,
+            changes: changeLoad(m, nowMs), scored, cur, monthWeeks, monthScore, scoreMonth: cur.month,
+            monthCS: monthScore[cur.month] === undefined ? null : monthScore[cur.month],
+            weekStreak, longestWeek, comeback,
+            perfectWeeks: scored.filter(x => x.A >= 1).length,
+            bestMonthCS: Math.max(0, ...closedMonths.map(mk => monthScore[mk])),
+            flawlessMonths: closedMonths.filter(mk => monthWeeks[mk].every(x => x.A >= 1)).length,
+            lockedDays: Math.max(0, Math.floor((nowMs - lastChange) / 864e5)),
+            dow, months, weeks,
             avgWeek: weeksActive ? keys.length / weeksActive : 0
         };
     }
@@ -428,21 +495,20 @@
         return memo.get(m.id);
     }
 
+    // Higher weekly points win each completed week; higher month score wins each closed month.
     function h2h(a, b) {
         const sa = stats(a), sb = stats(b);
         let aw = 0, bw = 0, am = 0, bm = 0;
-        // Only score the period when both people had accounts.
-        const since = new Date(Math.max(Date.parse(a.createdAt), Date.parse(b.createdAt)));
-        const curW = startOfWeek(today());
-        for (let w = startOfWeek(since); w < curW; w = addDays(w, 7)) {
-            const k = keyOf(w), x = sa.weeks[k] || 0, y = sb.weeks[k] || 0;
-            if (x > y) aw++; else if (y > x) bw++;
+        const pb = Object.fromEntries(sb.scored.map(x => [x.wk, x]));
+        for (const x of sa.scored) {
+            const y = pb[x.wk];
+            if (!x.complete || !y) continue;
+            if (x.pts - y.pts > 0.05) aw++; else if (y.pts - x.pts > 0.05) bw++;
         }
-        const curM = todayKey().slice(0, 7), sinceM = keyOf(since).slice(0, 7);
-        for (const k of new Set([...Object.keys(sa.months), ...Object.keys(sb.months)])) {
-            if (k >= curM || k < sinceM) continue;
-            const x = sa.months[k] || 0, y = sb.months[k] || 0;
-            if (x > y) am++; else if (y > x) bm++;
+        for (const [mk, x] of Object.entries(sa.monthScore)) {
+            const y = sb.monthScore[mk];
+            if (mk >= sa.scoreMonth || y === undefined) continue;
+            if (x - y > 0.05) am++; else if (y - x > 0.05) bm++;
         }
         return { aw, bw, am, bm };
     }
@@ -457,23 +523,20 @@
     }
 
     const BADGES = [
-        { id: 'first', icon: '🎯', name: 'First Rep', desc: 'Log your first gym day', goal: 1, val: s => s.total },
-        { id: 't10', icon: '🔟', name: 'Double Digits', desc: '10 gym days', goal: 10, val: s => s.total },
-        { id: 't25', icon: '🥉', name: 'Regular', desc: '25 gym days', goal: 25, val: s => s.total },
-        { id: 't50', icon: '🥈', name: 'Dedicated', desc: '50 gym days', goal: 50, val: s => s.total },
-        { id: 't100', icon: '🥇', name: 'Centurion', desc: '100 gym days', goal: 100, val: s => s.total },
-        { id: 't200', icon: '💎', name: 'Iron Legend', desc: '200 gym days', goal: 200, val: s => s.total },
+        { id: 'first', icon: '🎯', name: 'First Rep', desc: 'Log your first gym session', goal: 1, val: s => s.total },
+        { id: 'pw1', icon: '✅', name: 'Plan Keeper', desc: 'Complete your plan for a week', goal: 1, val: s => s.longestWeek },
+        { id: 'pw4', icon: '📅', name: 'Habit Formed', desc: '4 perfect weeks in a row', goal: 4, val: s => s.longestWeek },
+        { id: 'pw12', icon: '🏆', name: 'Quarter Beast', desc: '12 perfect weeks in a row', goal: 12, val: s => s.longestWeek },
+        { id: 'iron', icon: '🦾', name: 'Iron Month', desc: 'Finish a month scoring 90+', goal: 90, val: s => s.bestMonthCS },
+        { id: 'flawless', icon: '💎', name: 'Flawless Month', desc: 'Every week of a month perfect', goal: 1, val: s => s.flawlessMonths },
+        { id: 'locked', icon: '🔒', name: 'Locked In', desc: '90 days without changing your plan', goal: 90, val: s => s.lockedDays },
+        { id: 'mvp', icon: '👑', name: 'Monthly MVP', desc: 'Win a month on score', goal: 1, val: s => s.monthsWon || 0 },
+        { id: 'comeback', icon: '🔄', name: 'Comeback Kid', desc: 'Perfect week right after one under 50%', goal: 1, val: s => (s.comeback ? 1 : 0) },
         { id: 's3', icon: '🔥', name: 'Heating Up', desc: '3-day streak', goal: 3, val: s => s.longest },
         { id: 's7', icon: '⚡', name: 'Unstoppable', desc: '7-day streak', goal: 7, val: s => s.longest },
-        { id: 'w1', icon: '✅', name: 'Goal Getter', desc: 'Hit your weekly goal', goal: 1, val: s => s.longestWeek },
-        { id: 'w4', icon: '📅', name: 'Habit Formed', desc: 'Weekly goal 4 weeks in a row', goal: 4, val: s => s.longestWeek },
-        { id: 'w12', icon: '🏆', name: 'Quarter Beast', desc: 'Weekly goal 12 weeks in a row', goal: 12, val: s => s.longestWeek },
-        { id: 'beast', icon: '🦾', name: 'Beast Week', desc: '6+ sessions in one week', goal: 6, val: s => s.maxWeek },
-        { id: 'month16', icon: '🗓️', name: 'Monster Month', desc: '16+ sessions in a month', goal: 16, val: s => s.bestMonth },
-        { id: 'weekend', icon: '🌅', name: 'Weekend Warrior', desc: '10 weekend sessions', goal: 10, val: s => s.weekend },
-        { id: 'early', icon: '🐓', name: 'Early Bird', desc: 'Check in before 8 AM 5 times', goal: 5, val: s => s.early },
-        { id: 'comeback', icon: '🔄', name: 'Comeback Kid', desc: 'Return after a 7+ day break', goal: 1, val: s => (s.comeback ? 1 : 0) },
-        { id: 'mvp', icon: '👑', name: 'Monthly MVP', desc: 'Win a month against your buddy', goal: 1, val: s => s.monthsWon || 0 },
+        { id: 't10', icon: '🔟', name: 'Double Digits', desc: '10 gym sessions', goal: 10, val: s => s.total },
+        { id: 't50', icon: '🥈', name: 'Dedicated', desc: '50 gym sessions', goal: 50, val: s => s.total },
+        { id: 't100', icon: '🥇', name: 'Centurion', desc: '100 gym sessions', goal: 100, val: s => s.total },
         { id: 'steps10k', icon: '👟', name: '10K Day', desc: 'Log 10,000+ steps in a day', goal: 10000, val: s => s.maxSteps },
         { id: 'steps100k', icon: '🥾', name: 'Trailblazer', desc: '100,000 total steps', goal: 100000, val: s => s.stepsTotal },
         { id: 'steps1m', icon: '🌍', name: 'Step Millionaire', desc: '1,000,000 total steps', goal: 1000000, val: s => s.stepsTotal }
@@ -481,12 +544,13 @@
     const earnedSet = m => { const s = fullStats(m); return new Set(BADGES.filter(x => x.val(s) >= x.goal).map(x => x.id)); };
 
     const monthKeys = (p, mk) => Object.keys(p.days).filter(k => k.startsWith(mk)).sort();
+    const weeksIn = (p, mk) => stats(p).scored.filter(x => x.month === mk);
     const CHALLENGES = [
-        { icon: '🌅', name: 'Weekend Warrior', desc: 'Most weekend sessions this month', score: (p, mk) => monthKeys(p, mk).filter(k => [0, 6].includes(parseKey(k).getDay())).length },
-        { icon: '🐓', name: 'Early Bird', desc: 'Most check-ins before 8 AM this month', score: (p, mk) => monthKeys(p, mk).filter(k => p.days[k].t && new Date(p.days[k].t).getHours() < 8).length },
-        { icon: '🔥', name: 'Streak Master', desc: 'Longest streak within this month', score: (p, mk) => longestRun(monthKeys(p, mk)) },
+        { icon: '💎', name: 'Perfect Weeks', desc: 'Most weeks with your plan fully done', score: (p, mk) => weeksIn(p, mk).filter(x => x.A >= 1).length },
+        { icon: '🔥', name: 'Streak Master', desc: 'Longest run of consecutive days this month', score: (p, mk) => longestRun(monthKeys(p, mk)) },
+        { icon: '🎯', name: 'Zero Misses', desc: 'Fewest planned sessions missed (finished weeks)', low: true, unit: 'missed', score: (p, mk) => weeksIn(p, mk).filter(x => x.complete).reduce((s, x) => s + Math.max(0, x.plan - x.done), 0) },
         { icon: '🎨', name: 'Variety Pack', desc: 'Most different workout types logged', score: (p, mk) => new Set(monthKeys(p, mk).flatMap(k => p.days[k].w || [])).size },
-        { icon: '📆', name: 'No-Skip Monday', desc: 'Most Monday sessions this month', score: (p, mk) => monthKeys(p, mk).filter(k => parseKey(k).getDay() === 1).length }
+        { icon: '👣', name: 'Steady Steps', desc: 'Most days with steps logged this month', score: (p, mk) => Object.keys(p.steps || {}).filter(k => k.startsWith(mk)).length }
     ];
 
     // ---------- rendering helpers ----------
@@ -611,7 +675,7 @@
                 <label class="field"><span>Your name</span><input name="name" maxlength="20" required placeholder="e.g. Gokul" autocapitalize="words" enterkeyhint="next"></label>
                 <div class="field"><span>Pick your avatar</span>${emojiPicker(emoji)}</div>
                 <div class="field"><span>Your color</span>${colorPicker(color)}</div>
-                <div class="field"><span>Weekly goal</span>
+                <div class="field"><span>Weekly plan: how many sessions will you commit to?</span>
                     <div class="stepper big">
                         <button type="button" data-action="step" data-field="goal" data-d="-1" aria-label="Decrease">−</button>
                         <b data-out="goal">${DEFAULT_GOAL}</b>
@@ -619,6 +683,7 @@
                         <small>sessions / week</small>
                     </div>
                     <input type="hidden" name="goal" value="${DEFAULT_GOAL}">
+                    <p class="fine left">Pick what you can <b>stick to</b>. Points reward keeping your plan, not doing more. Free to adjust for 14 days, then it's locked.</p>
                 </div>
                 <div class="field-row">
                     <label class="field"><span>4-digit PIN</span><input name="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="new-password" required></label>
@@ -699,18 +764,18 @@
     // ---------- views ----------
     function motivation(m, s, b) {
         const tk = todayKey();
-        const left = m.weeklyGoal - s.week;
+        const left = s.plan - s.week;
         if (m.days[tk]) {
-            if (left <= 0) return s.week > m.weeklyGoal ? `Weekly goal smashed: ${s.week}/${m.weeklyGoal}. Beast mode 🦾` : 'Weekly goal hit! Anything more is a bonus 🎉';
-            return `${s.streak > 1 ? `${s.streak}-day streak 🔥 ` : 'Nice work! '}${left} more to hit this week's goal.`;
+            if (left <= 0) return s.week > s.plan ? `Plan done (${s.week}/${s.plan}). Extra sessions are a bonus for you, not points 😉` : 'Plan complete! Full points locked in this week 🎉';
+            return `${s.streak > 1 ? `${s.streak}-day streak 🔥 ` : 'Nice work! '}${left} more to complete your plan.`;
         }
+        if (left <= 0) return 'Plan already done this week. Rest day or bonus round? 😤';
+        const daysLeft = 7 - (today().getDay() + 6) % 7;
+        if (left > daysLeft) return `${left} sessions left, ${daysLeft} day${daysLeft > 1 ? 's' : ''} to go. Every one counts.`;
+        if (left === daysLeft) return `No more rest days if you want full points: ${left} left in ${daysLeft} day${daysLeft > 1 ? 's' : ''}.`;
         if (s.streak > 1) return `Your ${s.streak}-day streak is on the line. Keep it alive!`;
         if (b && b.days[tk]) return `${b.name} already trained today. Your move 👀`;
-        if (left > 0) {
-            const daysLeft = 7 - (today().getDay() + 6) % 7;
-            return left > daysLeft ? `${left} sessions needed, ${daysLeft} day${daysLeft > 1 ? 's' : ''} left. Every one counts.` : `${left} more session${left > 1 ? 's' : ''} to hit your weekly goal.`;
-        }
-        return 'Goal already hit this week. Rest day or bonus round? 😤';
+        return `${left} more session${left > 1 ? 's' : ''} to complete your plan.`;
     }
 
     function viewToday() {
@@ -721,8 +786,8 @@
             ? `<span class="ci-check">✓</span><span class="ci-label">Checked in</span><span class="ci-sub">${entry.t ? `at ${fmtTime(entry.t)}` : 'today'}</span>`
             : `${ICON_DUMBBELL}<span class="ci-label">Tap to check in</span><span class="ci-sub">Went to the gym today?</span>`;
         return `<section class="card hero ${entry ? 'done' : ''}">
-                <div class="hero-top"><span class="eyebrow">This week</span><span class="chip">${s.week}/${m.weeklyGoal} sessions</span></div>
-                <button class="checkin" data-action="checkin" aria-pressed="${!!entry}" style="--ring:${Math.min(1, s.week / m.weeklyGoal)}" aria-label="${entry ? 'Checked in today. Tap to undo' : 'Check in for today'}">
+                <div class="hero-top"><span class="eyebrow">This week · ${Math.round(s.weekPts)} pts</span><span class="chip">${s.week}/${s.plan} planned</span></div>
+                <button class="checkin" data-action="checkin" aria-pressed="${!!entry}" style="--ring:${Math.min(1, s.week / s.plan)}" aria-label="${entry ? 'Checked in today. Tap to undo' : 'Check in for today'}">
                     <span class="checkin-ring"></span>
                     <span class="checkin-inner">${inner}</span>
                 </button>
@@ -731,16 +796,33 @@
             </section>
             <section class="tiles">
                 ${tile('🔥', s.streak, 'day streak')}
-                ${tile('📆', s.weekStreak, 'week streak')}
-                ${tile('🏆', s.longest, 'best streak')}
+                ${tile('⭐', s.weekStreak, 'perfect weeks')}
+                ${tile('🎯', fmtPts(s.monthCS), `${monthName(s.scoreMonth, { month: 'short' })} score`)}
             </section>
             ${buddyCard(m, s, b)}
-            ${stepsCard(m, s, b)}
+            ${scoreCard(m, b)}
             ${weekCard([m, b].filter(Boolean))}
-            ${monthCard(m, b)}
+            ${stepsCard(m, s, b)}
             ${photosCard()}
             ${nextBadgeCard(m)}
             ${installCard()}`;
+    }
+
+    const scoreRing = (v, c) => `<span class="sring" style="--c:${c};--p:${v === null ? 0 : Math.min(v, 100)}"><b>${fmtPts(v)}</b></span>`;
+
+    function scoreCard(m, b) {
+        const people = [m, b].filter(Boolean), sm = stats(m);
+        const rows = people.map(p => {
+            const x = stats(p), wks = x.monthWeeks[x.scoreMonth] || [];
+            const sub = x.monthCS === null ? 'Scored after your first full week' : `${wks.filter(w => w.A >= 1).length}/${wks.length} perfect week${wks.length === 1 ? '' : 's'}`;
+            return `<div class="score-row">${scoreRing(x.monthCS, colorOf(p))}<div class="grow"><strong>${esc(p.name)}</strong><small>${sub} · this week ${Math.round(x.weekPts)} pts so far${x.mult < 1 ? ` · ×${x.mult.toFixed(2)} plan change` : ''}</small></div></div>`;
+        }).join('');
+        let verdict = '';
+        if (b) {
+            const a = sm.monthCS, c = stats(b).monthCS;
+            if (a !== null && c !== null) verdict = Math.abs(a - c) < 0.5 ? 'Dead even on consistency 🤝' : `${a > c ? 'You are' : `${b.name} is`} more consistent this month by ${Math.round(Math.abs(a - c))} pts.`;
+        }
+        return `<section class="card"><div class="card-head"><h3>🎯 ${monthName(sm.scoreMonth)} score</h3><button class="link-btn" data-action="score-help">How points work</button></div>${rows}${verdict ? `<p class="verdict">${esc(verdict)}</p>` : ''}</section>`;
     }
 
     function stepsCard(m, s, b) {
@@ -784,11 +866,11 @@
                 <button class="btn btn-primary" data-action="invite">Send invite</button>
             </section>`;
         }
-        const bs = stats(b), trained = !!b.days[todayKey()], diff = s.week - bs.week;
-        const line = diff === 0 ? `Tied this week at ${s.week} each` : diff > 0 ? `You lead this week by ${diff}` : `${b.name} leads this week by ${-diff}`;
+        const bs = stats(b), trained = !!b.days[todayKey()], diff = Math.round(s.weekPts - bs.weekPts);
+        const line = diff === 0 ? 'Level on points this week' : diff > 0 ? `You lead this week by ${diff} pts` : `${b.name} leads this week by ${-diff} pts`;
         return `<section class="card buddy-card">
                 <div class="buddy-row">${av(b)}
-                    <div class="grow"><strong>${esc(b.name)} ${trained ? 'trained today 💪' : "hasn't checked in yet"}</strong><small>🔥 ${bs.streak}-day streak · ${bs.week}/${b.weeklyGoal} this week</small></div>
+                    <div class="grow"><strong>${esc(b.name)} ${trained ? 'trained today 💪' : "hasn't checked in yet"}</strong><small>🔥 ${bs.streak}-day streak · ${bs.week}/${bs.plan} planned this week</small></div>
                     ${trained ? '<span class="pill good">Done</span>' : '<button class="btn btn-sm btn-ghost" data-action="nudge">Nudge 👊</button>'}
                 </div>
                 <div class="buddy-foot">${esc(line)}</div>
@@ -801,26 +883,8 @@
         const rows = people.map(p => `<div class="wk-row"><span class="wk-name">${esc(p.name)}</span>${DOW.map((_, i) => {
             const k = keyOf(addDays(ws, i));
             return `<span class="wk-dot ${p.days[k] ? 'on' : ''} ${k === tk ? 'today' : ''} ${k > tk ? 'future' : ''}" style="--c:${colorOf(p)}"></span>`;
-        }).join('')}<span class="wk-count">${stats(p).week}/${p.weeklyGoal}</span></div>`).join('');
+        }).join('')}<span class="wk-count">${stats(p).week}/${stats(p).plan}</span></div>`).join('');
         return `<section class="card"><h3>This week</h3>${head}${rows}</section>`;
-    }
-
-    function monthCard(m, b) {
-        const t = today();
-        const dim = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
-        const people = [m, b].filter(Boolean);
-        const rows = people.map(p => {
-            const s = stats(p), target = Math.max(1, Math.round(p.weeklyGoal * dim / 7));
-            return `<div class="mrow"><div class="mrow-top"><span>${esc(p.name)}</span><span><b>${s.month}</b> / ${target}</span></div>${bar(colorOf(p), s.month / target)}</div>`;
-        }).join('');
-        let verdict = '';
-        if (b) {
-            const a = stats(m), c = stats(b);
-            if (!a.month && !c.month) verdict = 'Nobody has trained yet this month. First one sets the tone!';
-            else if (Math.abs(a.pace - c.pace) < 0.005) verdict = 'Dead even on consistency this month 🤝';
-            else verdict = `${a.pace > c.pace ? 'You are' : `${b.name} is`} more consistent this month (${pct(Math.max(a.pace, c.pace))} of goal pace).`;
-        }
-        return `<section class="card"><h3>${t.toLocaleDateString(undefined, { month: 'long' })} progress</h3>${rows}${verdict ? `<p class="verdict">${esc(verdict)}</p>` : ''}</section>`;
     }
 
     function nextBadgeCard(m) {
@@ -829,7 +893,7 @@
         if (!next) return '';
         return `<button class="card next-badge" data-action="tab" data-tab="trophies">
                 <span class="nb-ic">${next.x.icon}</span>
-                <span class="grow"><small>Next badge</small><strong>${next.x.name}</strong>${bar('var(--me)', next.r)}<small>${fmtN(next.x.val(s))}/${fmtN(next.x.goal)} · ${next.x.desc}</small></span>
+                <span class="grow"><small>Next badge</small><strong>${next.x.name}</strong>${bar('var(--me)', next.r)}<small>${fmtN(Math.floor(next.x.val(s)))}/${fmtN(next.x.goal)} · ${next.x.desc}</small></span>
                 <span class="chev">›</span>
             </button>`;
     }
@@ -892,57 +956,73 @@
 
     function viewBattle() {
         const m = me(), b = buddy(), people = [m, b].filter(Boolean);
+        const sm = stats(m), label = monthName(sm.scoreMonth, { month: 'short' });
         let html = '';
         if (b) {
-            const h = h2h(m, b);
+            const h = h2h(m, b), sb = stats(b);
             html += `<section class="card vs">
-                    <div class="vs-side">${av(m, 'av-lg')}<strong>${esc(m.name)}</strong></div>
+                    <div class="vs-side">${scoreRing(sm.monthCS, colorOf(m))}<strong>${esc(m.name)}</strong></div>
                     <div class="vs-mid">
+                        <small>${label} score</small>
                         <div class="vs-score"><span style="color:${colorOf(m)}">${h.aw}</span><em>:</em><span style="color:${colorOf(b)}">${h.bw}</span></div>
                         <small>weeks won</small>
                         <small class="vs-months">Months ${h.am} : ${h.bm}</small>
                     </div>
-                    <div class="vs-side">${av(b, 'av-lg')}<strong>${esc(b.name)}</strong></div>
+                    <div class="vs-side">${scoreRing(sb.monthCS, colorOf(b))}<strong>${esc(b.name)}</strong></div>
+                    <button class="vs-help" data-action="score-help">ⓘ Points = completion × difficulty × loyalty</button>
                 </section>`;
-            html += weekBattleCard(m, b) + monthBattleCard(m, b);
+            html += weekBattleCard(m, b);
         } else {
-            html += buddyCard(m, stats(m), null);
+            html += `<section class="card vs solo"><div class="vs-side">${scoreRing(sm.monthCS, colorOf(m))}<strong>${label} score</strong></div><button class="vs-help" data-action="score-help">ⓘ How points work</button></section>`;
+            html += buddyCard(m, sm, null);
         }
+        html += scoreboardCard(people) + plansCard(people);
         html += challengeCard(people);
         html += stepsBattleCard(people);
-        html += `<section class="card"><h3>Last 12 weeks</h3>${weeksChart(people)}${legend(people)}</section>`;
+        html += `<section class="card"><h3>Weekly points · last 12 weeks</h3>${weeksChart(people)}${legend(people)}</section>`;
         html += powerDaysCard(people) + recapCard(people) + allTimeCard(people);
         return html;
     }
 
-    function weekBattleCard(m, b) {
-        const ws = startOfWeek(today());
-        const hitDay = p => {
-            let c = 0;
-            for (let i = 0; i < 7; i++) if (p.days[keyOf(addDays(ws, i))] && ++c >= p.weeklyGoal) return i;
-            return null;
-        };
-        const sm = stats(m), sb = stats(b), hm = hitDay(m), hb = hitDay(b);
-        let v;
-        if (hm !== null && hb !== null) v = hm === hb ? 'You both hit your goals on the same day 🤝' : `${hm < hb ? 'You' : b.name} hit the weekly goal first 🏁`;
-        else if (hm !== null) v = `Goal done ✅ ${b.name} still needs ${b.weeklyGoal - sb.week}.`;
-        else if (hb !== null) v = `${b.name} already hit their goal. You need ${m.weeklyGoal - sm.week} more!`;
-        else v = 'Race is on: first to their weekly goal 🏁';
-        const row = (p, s) => `<div class="mrow"><div class="mrow-top"><span>${esc(p.name)}</span><span><b>${s.week}</b> / ${p.weeklyGoal}</span></div>${bar(colorOf(p), s.week / p.weeklyGoal, 'thick')}</div>`;
-        return `<section class="card"><h3>Weekly showdown</h3>${row(m, sm)}${row(b, sb)}<p class="verdict">${esc(v)}</p></section>`;
+    function scoreboardCard(people) {
+        const mk = stats(people[0]).scoreMonth;
+        const wks = [...new Set(people.flatMap(p => weeksIn(p, mk).map(x => x.wk)))].sort();
+        if (!wks.length) return '';
+        const head = `<div class="at-row at-head"><span>Week of</span>${people.map(p => `<span style="color:${colorOf(p)}">${esc(p.name)}</span>`).join('')}</div>`;
+        const rows = wks.map(wk => {
+            const vals = people.map(p => weeksIn(p, mk).find(x => x.wk === wk));
+            const done = vals.filter(Boolean);
+            const best = done.length > 1 && done.every(x => x.complete) ? Math.max(...done.map(x => x.pts)) : null;
+            const contested = best !== null && done.some(x => Math.abs(x.pts - best) > 0.05);
+            return `<div class="at-row"><span>${parseKey(wk).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}${vals.some(x => x && !x.complete) ? ' <em>live</em>' : ''}</span>${vals.map(x => !x ? '<span>—</span>'
+                : `<span class="${contested && Math.abs(x.pts - best) <= 0.05 ? 'best' : ''}">${Math.round(x.pts)}<small class="sub"> ${x.done}/${x.plan}</small></span>`).join('')}</div>`;
+        }).join('');
+        const foot = `<div class="at-row at-total"><span>Month score</span>${people.map(p => `<span>${fmtPts(stats(p).monthCS)}</span>`).join('')}</div>`;
+        return `<section class="card"><div class="card-head"><h3>${monthName(mk)} scoreboard</h3></div><div class="at" style="--n:${people.length}">${head}${rows}${foot}</div><p class="fine left">Points per week · sessions done/planned. Live week doesn't count until Sunday ends.</p></section>`;
     }
 
-    function monthBattleCard(m, b) {
+    function plansCard(people) {
+        const ss = people.map(stats);
+        const head = `<div class="at-row at-head"><span></span>${people.map(p => `<span style="color:${colorOf(p)}">${esc(p.name)}</span>`).join('')}</div>`;
+        const rows = [
+            ['Weekly plan', (p, s) => `${s.goal}/wk`],
+            ['Difficulty', (p, s) => `×${DIFF(s.goal).toFixed(2)}`],
+            ['Changes (90 days)', (p, s) => (s.changes ? String(s.changes) : '0')],
+            ['Plan loyalty', (p, s) => `<span class="${s.mult < 1 ? 'warn-txt' : 'ok-txt'}">×${s.mult.toFixed(2)}</span>`]
+        ].map(([label, f]) => `<div class="at-row"><span>${label}</span>${people.map((p, i) => `<span>${f(p, ss[i])}</span>`).join('')}</div>`).join('');
+        return `<section class="card"><div class="card-head"><h3>📋 Plans</h3><button class="link-btn" data-action="plan">My plan ›</button></div><div class="at" style="--n:${people.length}">${head}${rows}</div></section>`;
+    }
+
+    function weekBattleCard(m, b) {
         const sm = stats(m), sb = stats(b);
+        const diff = Math.round(sm.weekPts - sb.weekPts);
         let v;
-        if (!sm.month && !sb.month) v = 'No sessions yet this month. First one sets the tone!';
-        else if (sm.month === sb.month) v = `Level on ${sm.month} sessions. Who blinks first?`;
-        else {
-            const lead = sm.month > sb.month ? 'You' : b.name;
-            v = `${lead} ${lead === 'You' ? 'lead' : 'leads'} by ${Math.abs(sm.month - sb.month)} session${Math.abs(sm.month - sb.month) > 1 ? 's' : ''}.`;
-        }
-        const side = (p, s) => `<div class="duo-side" style="--c:${colorOf(p)}"><span class="duo-val">${s.month}</span><span class="duo-lbl">${esc(p.name)}</span><span class="duo-sub">${pct(s.pace)} of goal pace</span></div>`;
-        return `<section class="card"><h3>${today().toLocaleDateString(undefined, { month: 'long' })} battle</h3><div class="duo">${side(m, sm)}<span class="duo-vs">VS</span>${side(b, sb)}</div><p class="verdict">${esc(v)}</p></section>`;
+        if (sm.weekA >= 1 && sb.weekA >= 1) v = 'Both plans complete. Perfect week all round 🤝';
+        else if (sm.weekA >= 1) v = `Your plan is done ✅ ${b.name} needs ${sb.plan - sb.week} more.`;
+        else if (sb.weekA >= 1) v = `${b.name}'s plan is done. You need ${sm.plan - sm.week} more!`;
+        else v = diff === 0 ? 'Level on points. First to finish their plan sets the pace 🏁' : `${diff > 0 ? 'You lead' : `${b.name} leads`} by ${Math.abs(diff)} pts so far.`;
+        const row = (p, s) => `<div class="mrow"><div class="mrow-top"><span>${esc(p.name)} <small class="sub">${s.week}/${s.plan} planned</small></span><span><b>${Math.round(s.weekPts)}</b> pts</span></div>${bar(colorOf(p), s.weekA, 'thick')}</div>`;
+        return `<section class="card"><h3>This week's showdown</h3>${row(m, sm)}${row(b, sb)}<p class="verdict">${esc(v)}</p></section>`;
     }
 
     function stepsBattleCard(people) {
@@ -968,10 +1048,12 @@
         const t = today(), mk = todayKey().slice(0, 7);
         const ch = CHALLENGES[(t.getFullYear() * 12 + t.getMonth()) % CHALLENGES.length];
         const scores = people.map(p => ({ p, v: ch.score(p, mk) }));
-        const top = Math.max(...scores.map(x => x.v));
-        const leaders = scores.filter(x => x.v === top && top > 0);
+        const vals = scores.map(x => x.v);
+        const top = ch.low ? Math.min(...vals) : Math.max(...vals);
+        const anyData = ch.low ? people.some(p => weeksIn(p, mk).some(x => x.complete)) : top > 0;
+        const leaders = anyData ? scores.filter(x => x.v === top) : [];
         const daysLeft = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate() - t.getDate();
-        const verdict = !top ? 'No points yet. Grab the early lead!' : people.length > 1 && leaders.length > 1 ? 'All square. Tiebreaker incoming…' : people.length > 1 ? `${leaders[0].p.name} leads` : `Your score: ${top}`;
+        const verdict = !anyData ? 'No points yet. Grab the early lead!' : people.length > 1 && leaders.length > 1 ? 'All square. Tiebreaker incoming…' : people.length > 1 ? `${leaders[0].p.name} leads` : `Your score: ${top}${ch.unit ? ` ${ch.unit}` : ''}`;
         return `<section class="card challenge">
                 <div class="ch-top"><span class="nb-ic">${ch.icon}</span><div class="grow"><small>Challenge of the month</small><strong>${ch.name}</strong><small>${ch.desc}</small></div><span class="pill">${daysLeft}d left</span></div>
                 <div class="ch-scores">${scores.map(x => `<div class="ch-score ${leaders.length === 1 && leaders[0] === x && people.length > 1 ? 'lead' : ''}" style="--c:${colorOf(x.p)}">${av(x.p, 'av-sm')}<b>${x.v}</b><span>${esc(x.p.name)}</span></div>`).join('')}</div>
@@ -982,24 +1064,26 @@
     function weeksChart(people) {
         const N = 12, W = 336, H = 150, B = 22, T = 10, GUTTER = 30;
         const cur = startOfWeek(today());
-        const weeks = Array.from({ length: N }, (_, i) => addDays(cur, -7 * (N - 1 - i)));
-        const data = people.map(p => weeks.map(w => stats(p).weeks[keyOf(w)] || 0));
-        const max = Math.max(5, ...data.flat(), ...people.map(p => p.weeklyGoal));
+        const weeks = Array.from({ length: N }, (_, i) => keyOf(addDays(cur, -7 * (N - 1 - i))));
+        const data = people.map(p => {
+            const byWk = Object.fromEntries(stats(p).scored.map(x => [x.wk, x.pts]));
+            return weeks.map(wk => byWk[wk] || 0);
+        });
+        const max = Math.max(115, ...data.flat());
         const gw = (W - GUTTER) / N, bw = (gw - 6) / people.length, plot = H - B - T;
         const y = v => H - B - plot * v / max;
-        const g = people[0].weeklyGoal;
-        let svg = `<line x1="0" x2="${W - GUTTER + 2}" y1="${y(g).toFixed(1)}" y2="${y(g).toFixed(1)}" class="goal-line"/><text x="${W}" y="${(y(g) + 3.5).toFixed(1)}" text-anchor="end" class="goal-txt">goal</text>`;
-        weeks.forEach((w, i) => {
+        let svg = `<line x1="0" x2="${W - GUTTER + 2}" y1="${y(100).toFixed(1)}" y2="${y(100).toFixed(1)}" class="goal-line"/><text x="${W}" y="${(y(100) + 3.5).toFixed(1)}" text-anchor="end" class="goal-txt">100</text>`;
+        weeks.forEach((wk, i) => {
             people.forEach((p, j) => {
                 const v = data[j][i], h = v ? plot * v / max : 2;
-                svg += `<rect x="${(i * gw + 3 + j * bw).toFixed(1)}" y="${(H - B - h).toFixed(1)}" width="${Math.max(2, bw - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${colorOf(p)}" opacity="${v ? 0.92 : 0.2}"/>`;
+                svg += `<rect x="${(i * gw + 3 + j * bw).toFixed(1)}" y="${(H - B - h).toFixed(1)}" width="${Math.max(2, bw - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${colorOf(p)}" opacity="${v ? (i === N - 1 ? 0.55 : 0.92) : 0.2}"/>`;
             });
             if (i % 3 === 2 || i === N - 1) {
-                const label = i === N - 1 ? 'Now' : w.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+                const label = i === N - 1 ? 'Now' : parseKey(wk).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
                 svg += `<text x="${(i * gw + gw / 2).toFixed(1)}" y="${H - 5}" text-anchor="middle" class="axis-txt">${label}</text>`;
             }
         });
-        return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Sessions per week over the last 12 weeks">${svg}</svg>`;
+        return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weekly points over the last 12 weeks">${svg}</svg>`;
     }
 
     function topDays(dow) {
@@ -1015,30 +1099,31 @@
     }
 
     function recapCard(people) {
-        const t = today(), curMk = todayKey().slice(0, 7);
-        const earliest = people.flatMap(p => [Object.keys(p.days).sort()[0], p.createdAt]).filter(Boolean).map(x => x.slice(0, 7)).sort()[0] || curMk;
-        const rows = [];
-        for (let i = 0; i < 6; i++) {
-            const d = new Date(t.getFullYear(), t.getMonth() - i, 1);
-            const mk = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
-            if (mk < earliest) break;
-            const vals = people.map(p => stats(p).months[mk] || 0);
-            const top = Math.max(...vals);
-            const solo = people.length > 1 && top > 0 && vals.filter(v => v === top).length === 1;
-            const label = d.toLocaleDateString(undefined, d.getFullYear() === t.getFullYear() ? { month: 'short' } : { month: 'short', year: '2-digit' });
-            rows.push(`<div class="at-row"><span>${label}${mk === curMk ? ' <em>now</em>' : ''}</span>${vals.map(v => `<span class="${solo && v === top ? 'best' : ''}">${v}${solo && v === top ? (mk === curMk ? ' ↑' : ' 👑') : ''}</span>`).join('')}</div>`);
-        }
+        const curMk = stats(people[0]).scoreMonth;
+        const months = [...new Set(people.flatMap(p => Object.keys(stats(p).monthScore)))].sort().reverse().slice(0, 6);
+        if (!months.length) return '';
+        const rows = months.map(mk => {
+            const vals = people.map(p => stats(p).monthScore[mk]);
+            const nums = vals.filter(v => v !== undefined);
+            const top = Math.max(...nums);
+            const solo = people.length > 1 && nums.length > 1 && nums.filter(v => Math.abs(v - top) <= 0.05).length === 1;
+            const label = monthName(mk, mk.slice(0, 4) === curMk.slice(0, 4) ? { month: 'short' } : { month: 'short', year: '2-digit' });
+            return `<div class="at-row"><span>${label}${mk === curMk ? ' <em>so far</em>' : ''}</span>${vals.map(v => {
+                const win = solo && v !== undefined && Math.abs(v - top) <= 0.05;
+                return `<span class="${win ? 'best' : ''}">${fmtPts(v)}${win ? (mk === curMk ? ' ↑' : ' 👑') : ''}</span>`;
+            }).join('')}</div>`;
+        }).join('');
         const head = `<div class="at-row at-head"><span></span>${people.map(p => `<span style="color:${colorOf(p)}">${esc(p.name)}</span>`).join('')}</div>`;
-        return `<section class="card"><h3>Monthly recap</h3><div class="at" style="--n:${people.length}">${head}${rows.join('')}</div></section>`;
+        return `<section class="card"><h3>Monthly scores</h3><div class="at" style="--n:${people.length}">${head}${rows}</div></section>`;
     }
 
     function allTimeCard(people) {
         const metrics = [
+            ['Perfect weeks', s => s.perfectWeeks, v => v],
+            ['Best perfect run', s => s.longestWeek, v => `${v} wk`],
+            ['Best month score', s => s.bestMonthCS, v => (v ? Math.round(v) : '—')],
             ['Total sessions', s => s.total, v => v],
-            ['Longest streak', s => s.longest, v => `${v} d`],
-            ['Best goal streak', s => s.longestWeek, v => `${v} wk`],
-            ['Avg per week', s => s.avgWeek, v => v.toFixed(1)],
-            ['Best month', s => s.bestMonth, v => v],
+            ['Longest day streak', s => s.longest, v => `${v} d`],
             ['Badges', s => BADGES.filter(x => x.val(s) >= x.goal).length, v => `${v}/${BADGES.length}`]
         ];
         const ss = people.map(fullStats);
@@ -1078,9 +1163,13 @@
             </section>
             <h4 class="list-title">Training</h4>
             <div class="list">
-                <div class="row"><span class="row-ic">🎯</span><span class="grow">Weekly goal<small>Sessions per week</small></span>
-                    <div class="stepper"><button data-action="goal" data-d="-1" aria-label="Decrease goal">−</button><b>${m.weeklyGoal}</b><button data-action="goal" data-d="1" aria-label="Increase goal">+</button></div>
-                </div>
+                ${(() => {
+                    const curWk = keyOf(startOfWeek(today()));
+                    const pending = m.goalHistory.find(e => e.from > curWk);
+                    const sub = `${m.weeklyGoal} sessions/week${pending ? ` · ${pending.goal}/wk from ${fmtShort(pending.from)}` : ''}${s.mult < 1 ? ` · loyalty ×${s.mult.toFixed(2)}` : ' · locked 🔒'}`;
+                    return row('🎯', 'Weekly plan', sub, 'plan');
+                })()}
+                ${row('ⓘ', 'How points work', 'Completion × difficulty × plan loyalty', 'score-help')}
                 ${others.length > 1 ? `<label class="row"><span class="row-ic">🤝</span><span class="grow">Compare with</span><select data-change="buddy">${others.map(o => `<option value="${o.id}" ${b && o.id === b.id ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select></label>` : ''}
                 ${row('�', 'Log steps', `${fmtN(s.stepsTotal)} steps logged in total`, 'log-steps')}
                 ${row('📸', 'Progress photos', `${state.photos.length} on this phone · private`, 'photos')}
@@ -1238,6 +1327,83 @@
         } catch (e) {
             toast(url);
         }
+    }
+
+    // What changing the weekly plan to `g` would do right now.
+    function planImpact(m, g) {
+        const curWk = keyOf(startOfWeek(today()));
+        const nextMon = keyOf(addDays(startOfWeek(today()), 7));
+        const current = goalFor(m, curWk);
+        if (Date.now() < Date.parse(m.createdAt) + CALIBRATION_DAYS * 864e5) {
+            const until = addDays(new Date(m.createdAt), CALIBRATION_DAYS);
+            return { same: g === current, free: true, from: curWk, w: 0, until };
+        }
+        if (g === current) return { same: true };
+        const w = g > current ? 0.5 : 1;
+        const settled = { goalHistory: m.goalHistory.filter(e => e.from <= curWk) };
+        const c = changeLoad(settled, Date.now()) + w;
+        return { from: nextMon, w, c, mult: PENALTY(c), until: addDays(today(), PENALTY_DAYS) };
+    }
+
+    function updatePlanPreview(f) {
+        const m = me(), el = f.querySelector('.plan-preview');
+        if (!m || !el) return;
+        const g = clamp(parseInt(f.elements.goal.value, 10) || m.weeklyGoal, 1, 7);
+        const imp = planImpact(m, g);
+        const pending = m.goalHistory.some(e => e.from > keyOf(startOfWeek(today())));
+        const btn = f.querySelector('button[type=submit]');
+        let html;
+        if (imp.same) {
+            html = pending ? '↩️ Keeps your current plan and cancels the pending change. No penalty.' : '✅ That\'s your current plan.';
+            btn.disabled = !pending;
+        } else if (imp.free) {
+            html = `✨ <b>Free change.</b> You're in your 14-day setup window (until ${imp.until.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}). Applies from this week. Difficulty ×${DIFF(g).toFixed(2)}.`;
+            btn.disabled = false;
+        } else {
+            const pctOff = Math.round((1 - imp.mult) * 100);
+            html = `<b>${imp.w === 1 ? 'Lowering' : 'Raising'} your plan</b> counts as ${imp.w === 1 ? 'a full' : 'a half'} change.<br>
+                Loyalty becomes <b class="warn-txt">×${imp.mult.toFixed(2)}</b> (−${pctOff}% on weekly points) until ${imp.until.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}.<br>
+                Starts ${fmtShort(imp.from)}. Difficulty ×${DIFF(g).toFixed(2)}.`;
+            btn.disabled = false;
+        }
+        el.innerHTML = html;
+    }
+
+    function openPlan() {
+        const m = me(), curWk = keyOf(startOfWeek(today()));
+        const pending = m.goalHistory.find(e => e.from > curWk);
+        const start = pending ? pending.goal : m.weeklyGoal;
+        openSheet(`<h2 class="sheet-title">🎯 Weekly plan</h2>
+            <p class="muted">You're committed to <b>${m.weeklyGoal}</b> session${m.weeklyGoal > 1 ? 's' : ''} a week.${pending ? ` Switching to <b>${pending.goal}</b> from ${fmtShort(pending.from)}.` : ''}</p>
+            <form id="plan-form" novalidate>
+                <div class="stepper big plan-step">
+                    <button type="button" data-action="step" data-field="goal" data-d="-1" aria-label="Decrease">−</button>
+                    <b data-out="goal">${start}</b>
+                    <button type="button" data-action="step" data-field="goal" data-d="1" aria-label="Increase">+</button>
+                    <small>sessions / week</small>
+                </div>
+                <input type="hidden" name="goal" value="${start}">
+                <div class="plan-preview"></div>
+                <p class="form-err"></p>
+                <button class="btn btn-primary" type="submit">Confirm plan</button>
+                ${pending ? '<button class="btn btn-ghost" type="button" data-action="plan-cancel">Cancel pending change (free)</button>' : ''}
+            </form>`, { kind: 'plan' });
+        updatePlanPreview($('#plan-form'));
+    }
+
+    function openScoreHelp() {
+        const m = me(), g = m ? m.weeklyGoal : DEFAULT_GOAL;
+        openSheet(`<h2 class="sheet-title">How points work</h2>
+            <p class="muted">The battle rewards <b>sticking to your own plan</b>, not doing more than your buddy.</p>
+            <div class="rules">
+                <div class="rule"><span class="rule-ic">🎯</span><div><b>Complete your plan</b><small>Up to 100 pts a week. 3 of 4 planned = 75. Extra sessions don't add points.</small></div></div>
+                <div class="rule"><span class="rule-ic">💪</span><div><b>Bigger plan, bigger multiplier</b><small>More days a week is harder to keep.</small>
+                    <div class="mchips">${[1, 2, 3, 4, 5, 6, 7].map(n => `<span class="mchip ${n === g ? 'on' : ''}"><b>${n}</b>×${DIFF(n).toFixed(2)}</span>`).join('')}</div></div></div>
+                <div class="rule"><span class="rule-ic">🔒</span><div><b>Stay loyal to your plan</b><small>Each change cuts points for 90 days: −5%, −15%, −30% (max −40%). Raising counts as half. Free in your first 14 days.</small></div></div>
+                <div class="rule"><span class="rule-ic">🏆</span><div><b>Win weeks and months</b><small>More points wins the week. Month score = average of its weeks. A week belongs to the month most of its days fall in.</small></div></div>
+            </div>
+            <div class="formula">points = completion × difficulty × loyalty × 100</div>
+            <button class="btn btn-ghost" data-action="close-sheet">Got it</button>`, { kind: 'help' });
     }
 
     function openSteps(k) {
@@ -1488,7 +1654,14 @@
         'install-help': installHelp,
         'hide-install': () => { ls.set(K.installHide, true); render(); },
         'trophy-for': el => { state.trophyFor = el.dataset.v; render(); },
-        goal: el => mutateMe(m => { m.weeklyGoal = clamp(m.weeklyGoal + Number(el.dataset.d), 1, 7); }),
+        plan: () => openPlan(),
+        'plan-cancel': () => {
+            const curWk = keyOf(startOfWeek(today()));
+            closeSheet();
+            mutateMe(x => { x.goalHistory = x.goalHistory.filter(e => e.from <= curWk); });
+            toast('Pending plan change cancelled. No penalty.');
+        },
+        'score-help': () => openScoreHelp(),
         'edit-profile': () => {
             const m = me();
             openSheet(`<h2 class="sheet-title">Edit profile</h2>
@@ -1608,6 +1781,7 @@
             const v = clamp(Number(inp.value) + Number(el.dataset.d), 1, 7);
             inp.value = v;
             f.querySelector(`[data-out="${el.dataset.field}"]`).textContent = v;
+            if (f.id === 'plan-form') updatePlanPreview(f);
             haptic(8);
         }
     };
@@ -1657,6 +1831,28 @@
             closeSheet();
             mutateMe(x => { x.pinSalt = salt; x.pinHash = hash; });
             toast('PIN updated 🔒');
+        },
+        'plan-form': f => {
+            const m = me();
+            const g = clamp(parseInt(f.elements.goal.value, 10) || m.weeklyGoal, 1, 7);
+            const imp = planImpact(m, g);
+            const curWk = keyOf(startOfWeek(today()));
+            const hadPending = m.goalHistory.some(e => e.from > curWk);
+            if (imp.same && !hadPending) { closeSheet(); return; }
+            closeSheet();
+            mutateMe(x => {
+                x.goalHistory = x.goalHistory.filter(e => e.from <= curWk);
+                if (imp.free && !imp.same) {
+                    x.goalHistory = x.goalHistory.filter(e => e.from !== curWk);
+                    x.goalHistory.push({ from: curWk, goal: g, at: new Date().toISOString(), w: 0 });
+                } else if (!imp.same) {
+                    x.goalHistory.push({ from: imp.from, goal: g, at: new Date().toISOString(), w: imp.w });
+                }
+                x.goalHistory.sort((a, b) => a.from.localeCompare(b.from));
+                if (x.goalHistory[0].from > keyOf(startOfWeek(new Date(x.createdAt)))) x.goalHistory[0].from = keyOf(startOfWeek(new Date(x.createdAt)));
+                x.weeklyGoal = goalFor(x, curWk);
+            });
+            toast(imp.same ? 'Plan kept. Pending change cancelled.' : imp.free ? `Plan set to ${g}/week ✨` : `Plan changes to ${g}/week on ${fmtShort(imp.from)}`);
         },
         'steps-form': f => {
             const k = f.elements.date.value;
@@ -1760,6 +1956,11 @@
             return { id: `${slug(name)}-demo`, name, emoji, color, weeklyGoal: 4, pinSalt: '', pinHash: '', createdAt: addDays(today(), -140).toISOString(), updatedAt: new Date().toISOString(), days, steps };
         };
         const a = mk('Gokul', '🦁', COLORS[0], 0.62), b = mk('Nithin', '🐺', COLORS[1], 0.52);
+        const created = keyOf(startOfWeek(new Date(b.createdAt)));
+        b.goalHistory = [
+            { from: created, goal: 5, at: b.createdAt, w: 0 },
+            { from: keyOf(addDays(startOfWeek(today()), -14)), goal: 3, at: addDays(today(), -18).toISOString(), w: 1 }
+        ];
         ls.set(K.db, { members: { [a.id]: a, [b.id]: b } });
     }
 
