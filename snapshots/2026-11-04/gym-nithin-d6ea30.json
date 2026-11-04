@@ -1,0 +1,21 @@
+{
+ "id": "nithin-d6ea30",
+ "name": "Nithin",
+ "emoji": "🦍",
+ "color": "#ff5a36",
+ "weeklyGoal": 5,
+ "goalHistory": [
+  {
+   "from": "2026-10-26",
+   "goal": 5,
+   "at": "2026-11-01T16:57:43.879Z",
+   "w": 0
+  }
+ ],
+ "pinHash": "26b2e6413d74f23f861078c3c166b209a95dc1f80f7b2491dbd66d67570b305b",
+ "pinSalt": "a00f9d1ec1e15ebc8fbbbe3bfa84adff",
+ "createdAt": "2026-11-01T16:57:43.879Z",
+ "updatedAt": "2026-11-01T16:57:43.879Z",
+ "days": {},
+ "steps": {}
+}
