@@ -76,7 +76,9 @@ def write(files, apply):
     if not apply:
         print('\nDry run only. Re-run with --apply to write these changes.')
         return
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    # Same format as JavaScript's toISOString(), which every phone browser parses.
+    now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.') + \
+        f'{datetime.datetime.now(datetime.timezone.utc).microsecond // 1000:03d}Z'
     payload = {}
     live = current()
     for name, m in files.items():
