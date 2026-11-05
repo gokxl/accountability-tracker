@@ -1,6 +1,6 @@
 'use strict';
 (function () {
-    const APP_VERSION = '3.2.0';
+    const APP_VERSION = '3.3.0';
     // config.js uses a top-level const, which is not exposed as window.CONFIG.
     const CFG = typeof CONFIG !== 'undefined' ? CONFIG : {};
     const qs = new URLSearchParams(location.search);
@@ -32,6 +32,9 @@
     // Plan-change penalty escalates with the (weighted) number of changes in the last 90 days.
     const PENALTY = c => Math.max(0.6, 1 - 0.05 * c * (c + 1) / 2);
     const COLOR_RE = /^#[0-9a-f]{6}$/i;
+    const TOMB_RE = /^[ds]:\d{4}-\d{2}-\d{2}$/;
+    const TOMB_KEEP_MS = 180 * 864e5;
+    const isIso = v => typeof v === 'string' && !isNaN(Date.parse(v));
     const FILE_RE = /^gym-[a-z0-9-]{3,40}\.json$/;
 
     const ICON_DUMBBELL = '<svg class="ci-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11"/></svg>';
@@ -105,6 +108,7 @@
                 if (!DATE_RE.test(k)) continue;
                 const e = {};
                 if (v && typeof v.t === 'string' && !isNaN(Date.parse(v.t))) e.t = v.t;
+                if (v && isIso(v.u)) e.u = v.u;
                 if (v && Array.isArray(v.w)) {
                     const w = v.w.filter(x => WORKOUT_IDS.has(x)).slice(0, 4);
                     if (w.length) e.w = w;
@@ -118,6 +122,13 @@
                 const n = Number(v);
                 if (DATE_RE.test(k) && Number.isInteger(n) && n > 0 && n <= MAX_STEPS) steps[k] = n;
             }
+        }
+        const su = {}, tomb = {};
+        if (raw.su && typeof raw.su === 'object') {
+            for (const [k, v] of Object.entries(raw.su)) if (DATE_RE.test(k) && isIso(v)) su[k] = v;
+        }
+        if (raw.tomb && typeof raw.tomb === 'object') {
+            for (const [k, v] of Object.entries(raw.tomb)) if (TOMB_RE.test(k) && isIso(v)) tomb[k] = v;
         }
         const createdAt = typeof raw.createdAt === 'string' && !isNaN(Date.parse(raw.createdAt)) ? raw.createdAt : new Date().toISOString();
         const startWk = keyOf(startOfWeek(new Date(createdAt)));
@@ -150,8 +161,57 @@
             pinSalt: typeof raw.pinSalt === 'string' ? raw.pinSalt : '',
             createdAt,
             updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : '',
+            profileAt: isIso(raw.profileAt) ? raw.profileAt : '',
             days,
-            steps
+            steps,
+            su,
+            tomb
+        };
+    }
+
+    const isoMax = (a, b) => ((a || '') >= (b || '') ? a || '' : b || '');
+    const canon = v => (Array.isArray(v) ? v.map(canon)
+        : v && typeof v === 'object' ? Object.keys(v).sort().reduce((o, k) => { o[k] = canon(v[k]); return o; }, {}) : v);
+    const memberSig = m => JSON.stringify(canon([m.days, m.steps, m.su, m.tomb, m.name, m.emoji, m.color, m.pinHash, m.pinSalt, m.goalHistory, m.profileAt]));
+
+    // Combine two copies of the same member field by field so an out-of-date copy can never erase newer data.
+    // Each check-in / step entry keeps its own timestamp; deletions are recorded as timestamped tombstones.
+    function mergeMember(a, b) {
+        const pa = a.profileAt !== b.profileAt ? (a.profileAt > b.profileAt ? a : b) : ((a.updatedAt || '') >= (b.updatedAt || '') ? a : b);
+        const cutoff = new Date(Date.now() - TOMB_KEEP_MS).toISOString();
+        const tomb = {};
+        for (const src of [a.tomb, b.tomb]) {
+            for (const [k, v] of Object.entries(src || {})) if (v > cutoff) tomb[k] = isoMax(tomb[k], v);
+        }
+        const ts = e => (e && (e.u || e.t)) || '';
+        const days = {};
+        for (const k of new Set([...Object.keys(a.days), ...Object.keys(b.days)])) {
+            const ea = a.days[k], eb = b.days[k];
+            const pick = !ea ? eb : !eb ? ea : (ts(ea) >= ts(eb) ? ea : eb);
+            const t = tomb[`d:${k}`];
+            if (t && t >= ts(pick)) continue;
+            if (t) delete tomb[`d:${k}`];
+            days[k] = Object.assign({}, pick, pick.w ? { w: pick.w.slice() } : {});
+        }
+        const steps = {}, su = {};
+        const as = a.steps || {}, bs = b.steps || {}, asu = a.su || {}, bsu = b.su || {};
+        for (const k of new Set([...Object.keys(as), ...Object.keys(bs)])) {
+            const fromA = k in as && (!(k in bs) || (asu[k] || '') >= (bsu[k] || ''));
+            const u = fromA ? asu[k] || '' : bsu[k] || '';
+            const t = tomb[`s:${k}`];
+            if (t && t >= u) continue;
+            if (t) delete tomb[`s:${k}`];
+            steps[k] = fromA ? as[k] : bs[k];
+            if (u) su[k] = u;
+        }
+        const goalHistory = pa.goalHistory.map(e => Object.assign({}, e));
+        return {
+            id: a.id, name: pa.name, emoji: pa.emoji, color: pa.color,
+            weeklyGoal: goalFor({ goalHistory }, keyOf(startOfWeek(today()))), goalHistory,
+            pinHash: pa.pinHash, pinSalt: pa.pinSalt,
+            createdAt: a.createdAt <= b.createdAt ? a.createdAt : b.createdAt,
+            updatedAt: isoMax(a.updatedAt, b.updatedAt), profileAt: pa.profileAt,
+            days, steps, su, tomb
         };
     }
 
@@ -214,8 +274,11 @@
         async save(m) {
             const db = ls.get(K.db, { members: {} }) || { members: {} };
             db.members = db.members || {};
-            db.members[m.id] = m;
+            const prev = db.members[m.id] ? cleanMember(db.members[m.id]) : null;
+            const merged = prev ? mergeMember(m, prev) : m;
+            db.members[m.id] = merged;
             ls.set(K.db, db);
+            return merged;
         },
         async remove(id) {
             const db = ls.get(K.db, { members: {} }) || { members: {} };
@@ -254,13 +317,32 @@
             }
             return out;
         },
+        // Latest copy of one member straight from GitHub (no ETag, no cache).
+        async fetchMember(id, token) {
+            const res = await fetch(`${API}/${GIST_ID}`, {
+                headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}` }, cache: 'no-store'
+            });
+            if (res.status === 401) {
+                ls.del(K.token);
+                throw Object.assign(new Error('Sync key rejected'), { code: 'NO_TOKEN' });
+            }
+            if (!res.ok) throw new Error(`Couldn't reach GitHub (${res.status})`);
+            const f = ((await res.json()).files || {})[fileName(id)];
+            if (!f) return null;
+            const text = f.truncated && f.raw_url ? await (await fetch(f.raw_url, { cache: 'no-store' })).text() : f.content;
+            return cleanMember(JSON.parse(text));
+        },
+        // Read-merge-write: never upload a copy that is missing data GitHub already has.
         async save(m) {
             const token = ls.get(K.token);
             if (!token) throw Object.assign(new Error('Sync key needed'), { code: 'NO_TOKEN' });
+            const latest = await this.fetchMember(m.id, token);
+            const merged = latest ? mergeMember(m, latest) : m;
+            if (latest && memberSig(merged) === memberSig(latest)) { state.etag = null; return merged; }
             const res = await fetch(`${API}/${GIST_ID}`, {
                 method: 'PATCH',
                 headers: { Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                body: JSON.stringify({ files: { [fileName(m.id)]: { content: JSON.stringify(m, null, 1) } } })
+                body: JSON.stringify({ files: { [fileName(m.id)]: { content: JSON.stringify(merged, null, 1) } } })
             });
             if (res.status === 401) {
                 ls.del(K.token);
@@ -269,6 +351,7 @@
             if (res.status === 403 || res.status === 404) throw new Error('This sync key can\'t edit the gist (needs "gist" scope from the gist owner)');
             if (!res.ok) throw new Error(`Save failed (${res.status})`);
             state.etag = null;
+            return merged;
         },
         async remove(id) {
             const token = ls.get(K.token);
@@ -315,12 +398,20 @@
         const before = state.members;
         const local = me();
         let accountGone = false;
-        // Keep this device's copy of "me" when it has unsynced edits or is newer than what GitHub returned.
+        // Merge this device's copy of "me" with GitHub's; if the phone holds anything GitHub lacks, upload it.
         if (local) {
             const r = remote[local.id];
             const justSaved = Date.now() - (state.lastSaveAt || 0) < 60000;
             if (!r && !state.pending && !justSaved) accountGone = true;
-            else if (!r || state.pending || (r.updatedAt || '') < (local.updatedAt || '')) remote[local.id] = local;
+            else if (!r) remote[local.id] = local;
+            else {
+                const merged = mergeMember(local, r);
+                if (memberSig(merged) !== memberSig(r)) {
+                    state.pending = true;
+                    ls.set(K.pending, true);
+                }
+                remote[local.id] = merged;
+            }
         }
         if (state.loaded) {
             const tk = todayKey();
@@ -350,6 +441,8 @@
     function mutateMe(fn) {
         const m = me();
         if (!m) return;
+        m.tomb = m.tomb || {};
+        m.su = m.su || {};
         fn(m);
         m.updatedAt = new Date().toISOString();
         state.rev++;
@@ -361,6 +454,22 @@
         state.flushTimer = setTimeout(flush, 600);
     }
 
+    function setStepsEntry(x, k, n) {
+        const now = new Date().toISOString();
+        x.steps = x.steps || {};
+        x.su = x.su || {};
+        x.tomb = x.tomb || {};
+        if (n) {
+            x.steps[k] = n;
+            x.su[k] = now;
+            delete x.tomb[`s:${k}`];
+        } else {
+            delete x.steps[k];
+            delete x.su[k];
+            x.tomb[`s:${k}`] = now;
+        }
+    }
+
     async function flush() {
         if (!state.pending || !me()) return;
         if (state.flushing) { state.flushAgain = true; return; }
@@ -368,9 +477,15 @@
         setSyncBadge();
         const rev = state.rev;
         try {
-            await Store.save(me());
+            const saved = await Store.save(me());
             state.lastSaveAt = Date.now();
             if (state.rev === rev) {
+                // Adopt the merged copy so anything another device added shows up here too.
+                if (saved && me() && memberSig(saved) !== memberSig(me())) {
+                    state.members[state.meId] = saved;
+                    ls.set(K.cache, state.members);
+                    render();
+                }
                 state.pending = false;
                 ls.set(K.pending, false);
             } else {
@@ -785,7 +900,7 @@
         const inner = entry
             ? `<span class="ci-check">✓</span><span class="ci-label">Checked in</span><span class="ci-sub">${entry.t ? `at ${fmtTime(entry.t)}` : 'today'}</span>`
             : `${ICON_DUMBBELL}<span class="ci-label">Tap to check in</span><span class="ci-sub">Went to the gym today?</span>`;
-        return `<section class="card hero ${entry ? 'done' : ''}">
+        return `${syncWarnCard()}<section class="card hero ${entry ? 'done' : ''}">
                 <div class="hero-top"><span class="eyebrow">This week · ${Math.round(s.weekPts)} pts</span><span class="chip">${s.week}/${s.plan} planned</span></div>
                 <button class="checkin" data-action="checkin" aria-pressed="${!!entry}" style="--ring:${Math.min(1, s.week / s.plan)}" aria-label="${entry ? 'Checked in today. Tap to undo' : 'Check in for today'}">
                     <span class="checkin-ring"></span>
@@ -823,6 +938,16 @@
             if (a !== null && c !== null) verdict = Math.abs(a - c) < 0.5 ? 'Dead even on consistency 🤝' : `${a > c ? 'You are' : `${b.name} is`} more consistent this month by ${Math.round(Math.abs(a - c))} pts.`;
         }
         return `<section class="card"><div class="card-head"><h3>🎯 ${monthName(sm.scoreMonth)} score</h3><button class="link-btn" data-action="score-help">How points work</button></div>${rows}${verdict ? `<p class="verdict">${esc(verdict)}</p>` : ''}</section>`;
+    }
+
+    // Loud warning when this phone holds edits GitHub doesn't have (a quiet badge was easy to miss).
+    function syncWarnCard() {
+        if (LOCAL || !state.pending) return '';
+        const noKey = !ls.get(K.token);
+        if (!noKey && !state.syncError) return '';
+        const title = noKey ? 'Your check-ins are only on this phone' : 'Not synced yet';
+        const sub = noKey ? 'Add the sync key so your buddy sees them and they survive clearing the browser.' : `${state.syncError}. Retrying automatically.`;
+        return `<section class="card warn-card"><span class="nb-ic">⚠️</span><div class="grow"><strong>${title}</strong><small>${esc(sub)}</small></div><button class="btn btn-sm btn-primary" data-action="${noKey ? 'token' : 'sync-now'}">${noKey ? 'Add key' : 'Retry'}</button></section>`;
     }
 
     function stepsCard(m, s, b) {
@@ -1285,7 +1410,11 @@
         const m = me();
         if (!m || k > todayKey() || m.days[k]) return;
         const before = earnedSet(m);
-        mutateMe(x => { x.days[k] = k === todayKey() ? { t: new Date().toISOString() } : {}; });
+        mutateMe(x => {
+            const now = new Date().toISOString();
+            x.days[k] = k === todayKey() ? { t: now, u: now } : { u: now };
+            if (x.tomb) delete x.tomb[`d:${k}`];
+        });
         if (k === todayKey()) state.checkedInAt = Date.now();
         haptic(25);
         if (k === todayKey()) celebrate();
@@ -1297,7 +1426,11 @@
 
     function removeDay(k, silent) {
         if (!me() || !me().days[k]) return;
-        mutateMe(x => { delete x.days[k]; });
+        mutateMe(x => {
+            delete x.days[k];
+            x.tomb = x.tomb || {};
+            x.tomb[`d:${k}`] = new Date().toISOString();
+        });
         if (!silent) toast('Session removed');
         if (state.sheetDay === k) openDay(k);
     }
@@ -1310,6 +1443,7 @@
             if (set.has(w)) set.delete(w); else set.add(w);
             const arr = [...set].slice(0, 4);
             if (arr.length) e.w = arr; else delete e.w;
+            e.u = new Date().toISOString();
         });
         haptic(10);
         if (state.sheetDay === k) openDay(k);
@@ -1658,7 +1792,7 @@
         'plan-cancel': () => {
             const curWk = keyOf(startOfWeek(today()));
             closeSheet();
-            mutateMe(x => { x.goalHistory = x.goalHistory.filter(e => e.from <= curWk); });
+            mutateMe(x => { x.goalHistory = x.goalHistory.filter(e => e.from <= curWk); x.profileAt = new Date().toISOString(); });
             toast('Pending plan change cancelled. No penalty.');
         },
         'score-help': () => openScoreHelp(),
@@ -1798,7 +1932,7 @@
             const m = cleanMember({
                 id: `${slug(name)}-${randHex(3)}`, name, emoji: f.elements.emoji.value, color: f.elements.color.value,
                 weeklyGoal: Number(f.elements.goal.value), pinSalt: salt, pinHash: await hashPin(pin, salt),
-                createdAt: now, updatedAt: now, days: {}
+                createdAt: now, updatedAt: now, profileAt: now, days: {}
             });
             state.members[m.id] = m;
             login(m.id);
@@ -1818,7 +1952,7 @@
             const emoji = EMOJIS.includes(f.elements.emoji.value) ? f.elements.emoji.value : me().emoji;
             const color = COLORS.includes(f.elements.color.value) ? f.elements.color.value : me().color;
             closeSheet();
-            mutateMe(m => { m.name = name; m.emoji = emoji; m.color = color; });
+            mutateMe(m => { m.name = name; m.emoji = emoji; m.color = color; m.profileAt = new Date().toISOString(); });
             toast('Profile updated');
         },
         'pin-form': async f => {
@@ -1829,7 +1963,7 @@
             if (pin !== pin2) return formError(f, "New PINs don't match");
             const salt = randHex(16), hash = await hashPin(pin, salt);
             closeSheet();
-            mutateMe(x => { x.pinSalt = salt; x.pinHash = hash; });
+            mutateMe(x => { x.pinSalt = salt; x.pinHash = hash; x.profileAt = new Date().toISOString(); });
             toast('PIN updated 🔒');
         },
         'plan-form': f => {
@@ -1851,6 +1985,7 @@
                 x.goalHistory.sort((a, b) => a.from.localeCompare(b.from));
                 if (x.goalHistory[0].from > keyOf(startOfWeek(new Date(x.createdAt)))) x.goalHistory[0].from = keyOf(startOfWeek(new Date(x.createdAt)));
                 x.weeklyGoal = goalFor(x, curWk);
+                x.profileAt = new Date().toISOString();
             });
             toast(imp.same ? 'Plan kept. Pending change cancelled.' : imp.free ? `Plan set to ${g}/week ✨` : `Plan changes to ${g}/week on ${fmtShort(imp.from)}`);
         },
@@ -1866,12 +2001,12 @@
             closeSheet();
             mutateMe(x => {
                 x.steps = x.steps || {};
-                if (n === 0) delete x.steps[k]; else x.steps[k] = n;
+                setStepsEntry(x, k, n);
             });
             haptic(15);
             if (n && announceBadges(before)) return;
             toast(n ? `👟 ${fmtN(n)} steps saved for ${k === todayKey() ? 'today' : fmtShort(k)}` : 'Steps removed', had && n !== had ? {
-                action: 'Undo', fn: () => mutateMe(x => { x.steps = x.steps || {}; x.steps[k] = had; })
+                action: 'Undo', fn: () => mutateMe(x => setStepsEntry(x, k, had))
             } : undefined);
         },
         'token-form': f => {

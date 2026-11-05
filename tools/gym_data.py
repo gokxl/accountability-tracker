@@ -78,12 +78,27 @@ def write(files, apply):
         return
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     payload = {}
+    live = current()
     for name, m in files.items():
         if m is None:
             payload[name] = None
         else:
-            # Newer timestamp makes every phone accept the repaired copy instead of its local one.
-            m['updatedAt'] = now
+            # Fresh timestamps + deletion records make phones (which merge entry by entry) adopt the repaired copy.
+            old = live.get(name) or {}
+            m['updatedAt'] = m['profileAt'] = now
+            tomb, su = dict(m.get('tomb') or {}), dict(m.get('su') or {})
+            for k in set(old.get('days', {})) - set(m.get('days', {})):
+                tomb[f'd:{k}'] = now
+            for k, e in m.get('days', {}).items():
+                e['u'] = now
+                tomb.pop(f'd:{k}', None)
+            for k in set(old.get('steps', {})) - set(m.get('steps', {})):
+                tomb[f's:{k}'] = now
+                su.pop(k, None)
+            for k in m.get('steps', {}):
+                su[k] = now
+                tomb.pop(f's:{k}', None)
+            m['tomb'], m['su'] = tomb, su
             payload[name] = {'content': json.dumps(m, indent=1)}
     call('PATCH', f'{API}/gists/{GIST_ID}', {'files': payload}, auth=True)
     print(f'\nApplied {len(payload)} change(s). Phones pick it up on their next sync.')

@@ -457,6 +457,8 @@ label.btn { cursor: pointer; }
 .btn-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 10px; }
 
 /* ---------- consistency score ---------- */
+.warn-card { display: flex; align-items: center; gap: 12px; border-color: rgba(245, 179, 1, .45); background: linear-gradient(180deg, rgba(245, 179, 1, .12), rgba(245, 179, 1, .05)); }
+.warn-card strong { color: #fcd34d; }
 .sring { --p: 0; position: relative; flex-shrink: 0; width: 60px; height: 60px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--c) calc(var(--p) * 3.6deg), rgba(255, 255, 255, .08) 0); box-shadow: 0 8px 22px -12px var(--c); }
 .sring::before { content: ''; position: absolute; inset: 6px; border-radius: 50%; background: linear-gradient(180deg, var(--card-2), var(--card)); }
 .sring b { position: relative; font-size: 19px; font-weight: 900; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }

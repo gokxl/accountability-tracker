@@ -1,4 +1,4 @@
-const CACHE = 'gym-buddies-v5';
+const CACHE = 'gym-buddies-v6';
 const SHELL = [
     './',
     './index.html',
